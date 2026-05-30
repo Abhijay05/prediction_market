@@ -1,0 +1,258 @@
+// LvrAMM Prediction Market — Prisma Schema
+// Run: npx prisma migrate dev --name init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────
+
+enum MarketStatus {
+  ACTIVE      // trading is live
+  EXPIRED     // past end time, awaiting resolution
+  RESOLVED    // outcome set, redemptions open
+  CANCELLED   // voided (e.g. bad oracle data)
+}
+
+enum OutcomeToken {
+  YES
+  NO
+}
+
+enum TradeDirection {
+  BUY
+  SELL
+}
+
+enum ResolutionSource {
+  ADMIN        // manually verified by deployer
+  ORACLE       // automated oracle (future)
+}
+
+// ─────────────────────────────────────────────
+// USERS
+// ─────────────────────────────────────────────
+
+model User {
+  id              String    @id @default(uuid())          // internal UUID
+  walletAddress   String    @unique                       // checksummed EVM address
+  ensName         String?                                 // optional resolved ENS
+  nonce           String    @default(cuid())              // SIWE nonce, rotated on each login
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // relations
+  trades          Trade[]
+  positions       Position[]
+  marketsCreated  Market[]   @relation("MarketCreator")
+
+  @@index([walletAddress])
+  @@map("users")
+}
+
+// ─────────────────────────────────────────────
+// MARKETS
+// ─────────────────────────────────────────────
+
+model Market {
+  id                String        @id @default(uuid())
+  // on-chain identifiers
+  contractAddress   String        @unique                 // deployed PredictionMarket address
+  routerAddress     String                                // Router.sol that deployed this market
+  chainId           Int           @default(11155111)      // 11155111 = Sepolia
+
+  // metadata
+  question          String                               // e.g. "Will ETH reach $5000 by Dec 2025?"
+  description       String?       @db.Text
+  category          String?                              // e.g. "crypto", "sports", "politics"
+  imageUrl          String?
+
+  // collateral
+  collateralToken   String                               // mUSD contract address
+  initialLiquidity  Decimal       @db.Decimal(36, 18)    // in collateral token units (18 dec)
+
+  // timing
+  createdAtBlock    Int
+  expiresAt         DateTime
+  resolvedAt        DateTime?
+
+  // state
+  status            MarketStatus  @default(ACTIVE)
+  winningOutcome    OutcomeToken?                        // set on resolution
+  resolutionSource  ResolutionSource?
+  resolutionTxHash  String?
+
+  // AMM state (kept in sync by the indexer)
+  yesReserve        Decimal       @db.Decimal(36, 18)    // current YES token reserve
+  noReserve         Decimal       @db.Decimal(36, 18)    // current NO token reserve
+  totalVolume       Decimal       @db.Decimal(36, 18)    @default(0)
+  totalLiquidity    Decimal       @db.Decimal(36, 18)    @default(0)
+
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  // relations
+  creator           User          @relation("MarketCreator", fields: [creatorId], references: [id])
+  creatorId         String
+  trades            Trade[]
+  positions         Position[]
+  priceSnapshots    PriceSnapshot[]
+  resolutionEvent   ResolutionEvent?
+
+  @@index([status])
+  @@index([expiresAt])
+  @@index([contractAddress])
+  @@index([creatorId])
+  @@index([category])
+  @@map("markets")
+}
+
+// ─────────────────────────────────────────────
+// TRADES
+// ─────────────────────────────────────────────
+
+model Trade {
+  id              String          @id @default(uuid())
+
+  // on-chain reference
+  txHash          String          @unique               // transaction hash
+  blockNumber     Int
+  logIndex        Int                                   // event log index (for dedup)
+  chainId         Int             @default(11155111)
+
+  // trade details
+  direction       TradeDirection
+  outcome         OutcomeToken
+  collateralIn    Decimal         @db.Decimal(36, 18)   // collateral spent (BUY) or received (SELL)
+  tokenAmount     Decimal         @db.Decimal(36, 18)   // YES/NO tokens bought or sold
+  avgPrice        Decimal         @db.Decimal(36, 18)   // collateralIn / tokenAmount — derived
+  feeAmount       Decimal         @db.Decimal(36, 18)   @default(0)
+
+  // price context at time of trade
+  yesPriceBefore  Decimal         @db.Decimal(36, 18)
+  noPriceBefore   Decimal         @db.Decimal(36, 18)
+  yesPriceAfter   Decimal         @db.Decimal(36, 18)
+  noPriceAfter    Decimal         @db.Decimal(36, 18)
+  priceImpact     Decimal         @db.Decimal(10, 6)    // (priceAfter - priceBefore) / priceBefore
+
+  createdAt       DateTime        @default(now())        // indexed block time
+
+  // relations
+  market          Market          @relation(fields: [marketId], references: [id])
+  marketId        String
+  trader          User            @relation(fields: [traderId], references: [id])
+  traderId        String
+
+  // compound unique: one log index per tx cannot repeat
+  @@unique([txHash, logIndex])
+
+  // time-series + filtering queries
+  @@index([marketId, createdAt])
+  @@index([traderId, createdAt])
+  @@index([marketId, outcome, createdAt])
+  @@index([blockNumber])
+  @@map("trades")
+}
+
+// ─────────────────────────────────────────────
+// POSITIONS  (per-user, per-market aggregate)
+// ─────────────────────────────────────────────
+
+model Position {
+  id                String        @id @default(uuid())
+
+  // current holdings (updated on every trade)
+  yesTokens         Decimal       @db.Decimal(36, 18)   @default(0)
+  noTokens          Decimal       @db.Decimal(36, 18)   @default(0)
+
+  // cost basis tracking
+  totalSpent        Decimal       @db.Decimal(36, 18)   @default(0)   // collateral in
+  totalReceived     Decimal       @db.Decimal(36, 18)   @default(0)   // collateral out from sells
+  realizedPnl       Decimal       @db.Decimal(36, 18)   @default(0)   // locked in on sells/redemptions
+
+  // redemption state
+  redeemedAt        DateTime?
+  redemptionTxHash  String?
+  redemptionAmount  Decimal?      @db.Decimal(36, 18)
+
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  // relations
+  market            Market        @relation(fields: [marketId], references: [id])
+  marketId          String
+  user              User          @relation(fields: [userId], references: [id])
+  userId            String
+
+  // one position row per user per market
+  @@unique([userId, marketId])
+
+  @@index([userId])
+  @@index([marketId])
+  @@map("positions")
+}
+
+// ─────────────────────────────────────────────
+// PRICE SNAPSHOTS  (OHLCV-style time series)
+// ─────────────────────────────────────────────
+
+model PriceSnapshot {
+  id            String    @id @default(uuid())
+
+  // time bucket (rounded to interval by the indexer)
+  bucketStart   DateTime                              // start of the 1-min / 5-min bucket
+  intervalSecs  Int       @default(60)               // 60 = 1m, 300 = 5m, 3600 = 1h
+
+  // OHLCV for YES token price (NO price = 1 - yesClose)
+  yesOpen       Decimal   @db.Decimal(36, 18)
+  yesHigh       Decimal   @db.Decimal(36, 18)
+  yesLow        Decimal   @db.Decimal(36, 18)
+  yesClose      Decimal   @db.Decimal(36, 18)
+  volume        Decimal   @db.Decimal(36, 18)        // collateral volume in bucket
+
+  // raw block context
+  startBlock    Int
+  endBlock      Int
+  tradeCount    Int       @default(0)
+
+  // relations
+  market        Market    @relation(fields: [marketId], references: [id])
+  marketId      String
+
+  // one row per market + interval + bucket
+  @@unique([marketId, intervalSecs, bucketStart])
+
+  // time-series chart queries
+  @@index([marketId, bucketStart])
+  @@index([marketId, intervalSecs, bucketStart])
+  @@map("price_snapshots")
+}
+
+// ─────────────────────────────────────────────
+// RESOLUTION EVENTS
+// ─────────────────────────────────────────────
+
+model ResolutionEvent {
+  id              String            @id @default(uuid())
+  txHash          String            @unique
+  blockNumber     Int
+  winningOutcome  OutcomeToken
+  resolvedBy      String                               // wallet address of resolver
+  source          ResolutionSource
+  evidenceUrl     String?                              // optional IPFS link to evidence
+  createdAt       DateTime          @default(now())
+
+  // one-to-one with Market
+  market          Market            @relation(fields: [marketId], references: [id])
+  marketId        String            @unique
+
+  @@index([blockNumber])
+  @@map("resolution_events")
+}

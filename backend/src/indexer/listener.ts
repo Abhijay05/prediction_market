@@ -5,7 +5,7 @@ import { redis } from "../cache/redis";
 import { logger } from "../lib/logger";
 import { prisma } from "../lib/prisma";
 
-// ── ABI fragments (only the events we care about) ────────────────────────────
+// ABI fragments for prediction market events
 const MARKET_ABI = [
   "event MarketCreated(bytes32 indexed marketId, address indexed market, address indexed creator, string title, string description, string resolutionSource, uint256 deadline, uint256 liquidity)",
   "event MarketBuy(address indexed buyer, bool isBuyYes, uint256 amountIn, uint256 amountOut)",
@@ -15,18 +15,18 @@ const MARKET_ABI = [
 
 const iface = new ethers.Interface(MARKET_ABI);
 
-// ── Alchemy SDK setup ─────────────────────────────────────────────────────────
+// Alchemy setup
 const alchemy = new Alchemy({
   apiKey: process.env.ALCHEMY_API_KEY!,
   network: Network.ETH_SEPOLIA,
 });
 
-// ── BullMQ queues ─────────────────────────────────────────────────────────────
+// BullMQ Queues
 const tradeQueue   = new Queue("index-trade",   { connection: redis as any });
 const marketQueue  = new Queue("index-market",  { connection: redis as any });
 const snapshotQueue = new Queue("index-snapshot", { connection: redis as any });
 
-// ── Known market addresses (loaded from DB at startup) ────────────────────────
+// In-memory set of watched market addresses
 let watchedAddresses = new Set<string>();
 
 export async function loadWatchedMarkets(addresses: string[]) {
@@ -55,8 +55,9 @@ export function watchMarket(marketAddress: string) {
   );
 }
 
-// ── Main listener ─────────────────────────────────────────────────────────────
+// Start WebSocket listeners
 export async function startIndexer() {
+  // TODO: add exponential backoff reconnection if the websocket crashes
   logger.info("indexer: connecting to Alchemy WebSocket");
 
   // Subscribe to logs from all watched market contracts individually
@@ -245,7 +246,7 @@ export async function backfillHistory() {
   }
 }
 
-// ── Log dispatcher ────────────────────────────────────────────────────────────
+// Log dispatcher
 async function handleLog(log: any, timestamp?: string) {
   let parsed: ethers.LogDescription | null = null;
 

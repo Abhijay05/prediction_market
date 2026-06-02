@@ -27,7 +27,7 @@ export const snapshotWorker = new Worker<SnapshotJobData>(
     let yesPrice: number | null = null;
     let noPrice: number | null = null;
 
-    // 1. Try to read current price from Redis
+    // cache lookups
     const priceKey = `prices:${market.id}:latest`;
     const cached = await redis.get(priceKey);
     if (cached) {
@@ -42,7 +42,7 @@ export const snapshotWorker = new Worker<SnapshotJobData>(
       }
     }
 
-    // 2. If not in Redis, poll the database for the Trade record
+    // poll db if redis is empty (handles parallel race conditions)
     if (yesPrice === null) {
       log.info({ txHash }, "snapshot: price not in redis for this tx, polling database for trade");
       for (let attempt = 1; attempt <= 15; attempt++) {
@@ -65,8 +65,9 @@ export const snapshotWorker = new Worker<SnapshotJobData>(
     }
     const now = job.data.timestamp ? new Date(job.data.timestamp) : new Date();
 
+    // TODO: evaluate bulk upserts if high trade volumes block database threads
     for (const intervalSecs of INTERVALS) {
-      // Round down to bucket start
+      // align time bounds
       const bucketMs    = intervalSecs * 1000;
       const bucketStart = new Date(Math.floor(now.getTime() / bucketMs) * bucketMs);
 

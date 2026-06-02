@@ -5,7 +5,7 @@ import { prisma } from "../../lib/prisma";
 import { logger } from "../../lib/logger";
 import { ethers } from "ethers";
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// Core Types
 interface TradeJobData {
   txHash:          string;
   blockNumber:     number;
@@ -24,14 +24,14 @@ interface TradeJobData {
   collateralOut?: string;
 }
 
-// ── Worker ────────────────────────────────────────────────────────────────────
+// Background Queue Worker
 export const tradeWorker = new Worker<TradeJobData>(
   "index-trade",
   async (job: Job<TradeJobData>) => {
     const data = job.data;
     const log  = logger.child({ txHash: data.txHash, job: job.name });
 
-    // 1. Resolve market row from contract address
+    // TODO: evaluate indexing performance if DB connection pooling gets throttled under load
     const market = await prisma.market.findUnique({
       where: { contractAddress: data.contractAddress },
     });
@@ -158,7 +158,7 @@ export const tradeWorker = new Worker<TradeJobData>(
   }
 );
 
-// ── Position aggregate updater ────────────────────────────────────────────────
+// Aggregate positions to track trader cost basis
 async function updatePosition({
   userId, marketId, direction, outcome, collateral, tokens,
 }: {
@@ -215,7 +215,7 @@ async function updatePosition({
   });
 }
 
-// ── Reserve & Price fetcher (Alchemy eth_call on prev + current block) ────────────────
+// Dynamic reserve & price fetcher via Alchemy RPC block calls
 async function fetchReservesAroundTx(
   contractAddress: string,
   blockNumber: number,
@@ -292,7 +292,7 @@ async function fetchReservesAroundTx(
   };
 }
 
-// ── Error handling ────────────────────────────────────────────────────────────
+// FIXME: plug in Sentry / alerting if indexing jobs repeatedly fail
 tradeWorker.on("failed", (job, err) => {
   logger.error({ jobId: job?.id, err }, "trade worker: job failed");
 });

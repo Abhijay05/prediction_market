@@ -11,7 +11,6 @@ export default function CreateMarket() {
     question: "",
     criteria: "",
     sourceUrl: "",
-    sourceUrl: "",
     durationDays: "",
     durationHours: "",
     durationMinutes: "",
@@ -20,7 +19,7 @@ export default function CreateMarket() {
 
   const { isConnected } = useAccount();
   const { createMarket, isPending: isCreating, isSuccess: isCreateSuccess } = useCreateMarket();
-  const { approve, isPending: isApproving } = useApproveMUSD();
+  const { approve, isPending: isApproving, isConfirming: isApprovalConfirming } = useApproveMUSD();
   const { data: allowance } = useAllowance();
   const { data: musdBalance } = useMUSDBalance();
 
@@ -50,7 +49,6 @@ export default function CreateMarket() {
       title: formData.question,
       description: formData.criteria, // Using criteria as description
       resolutionSource: formData.sourceUrl,
-      isDynamic: false, // Default to static for simpler UI
       isDynamic: false, // Default to static for simpler UI
       duration: {
         days: formData.durationDays || 0,
@@ -270,11 +268,16 @@ export default function CreateMarket() {
                     </p>
                     <button
                       onClick={handleApprove}
-                      disabled={isApproving}
+                      disabled={isApproving || isApprovalConfirming}
                       className="mt-3 px-4 py-2 bg-indigo-500 text-white text-sm font-medium rounded hover:bg-indigo-600 transition-colors flex items-center gap-2"
                     >
-                      {isApproving && <Loader2 className="animate-spin" size={16} />}
-                      {isApproving ? "Approving..." : "Approve mUSD"}
+                      {(isApproving || isApprovalConfirming) && <Loader2 className="animate-spin" size={16} />}
+                      {isApproving 
+                        ? "Approve in Wallet..." 
+                        : isApprovalConfirming 
+                          ? "Confirming on Chain..." 
+                          : "Approve mUSD"
+                      }
                     </button>
                   </div>
                 </div>

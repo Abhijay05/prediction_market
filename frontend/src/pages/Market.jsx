@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useMarketDetails, useTrade, useApproveMUSD, useAllowance, useUserBalances, useMUSDBalance, useAdminResolve, useRedeem, useTokenAllowance, useApproveToken } from "../hooks/useContracts";
 import { useAccount } from "wagmi";
 import { maxUint256, parseEther } from "viem";
+import { PriceChart } from "../components/PriceChart";
 
 const formatCurrency = (num) => {
   return "$" + Number(num).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -421,39 +422,8 @@ export default function Market() {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               {/* Main Content */}
               <div className="lg:col-span-2 space-y-8">
-                {/* Price Visualizer */}
-                <div className="bg-card rounded-lg p-8" style={{ border: "1px solid rgba(255, 255, 255, 0.06)" }}>
-                  <h2 className="text-white font-semibold mb-6">Market Prices</h2>
-                  <div className="flex items-end justify-center gap-12 mb-8">
-                    {/* YES Bar */}
-                    <div className="text-center">
-                      <div className="mb-4 flex flex-col items-center">
-                        <div
-                          className="w-16 bg-gradient-to-t from-emerald-500 to-emerald-400 rounded-t transition-all"
-                          style={{ height: `${Math.max(yesPercentage * 2, 20)}px` }}
-                        />
-                      </div>
-                      <p className="text-emerald-400 font-bold text-xl mb-2">
-                        {yesPercentage.toFixed(1)}%
-                      </p>
-                      <p className="text-slate-400 text-sm">YES Price: ${market.priceYes.toFixed(2)}</p>
-                    </div>
-
-                    {/* NO Bar */}
-                    <div className="text-center">
-                      <div className="mb-4 flex flex-col items-center">
-                        <div
-                          className="w-16 bg-gradient-to-t from-red-500 to-red-400 rounded-t transition-all"
-                          style={{ height: `${Math.max(noPercentage * 2, 20)}px` }}
-                        />
-                      </div>
-                      <p className="text-red-400 font-bold text-xl mb-2">
-                        {noPercentage.toFixed(1)}%
-                      </p>
-                      <p className="text-slate-400 text-sm">NO Price: ${market.priceNo.toFixed(2)}</p>
-                    </div>
-                  </div>
-                </div>
+                {/* Real-time interactive Price Chart */}
+                <PriceChart marketId={marketAddress} question={market.title || market.description} />
 
                 {/* Stats Grid */}
                 <div className="grid grid-cols-2 gap-4">

@@ -1,0 +1,112 @@
+version: '3.8'
+
+services:
+  # ── Cache & Queue: Redis ────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: lvramm-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Database: Local Postgres (Optional fallback, Neon Cloud is also supported) 
+  db:
+    image: postgres:16-alpine
+    container_name: lvramm-db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: lvramm
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./seed/seed.sql:/docker-entrypoint-initdb.d/seed.sql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend: Express API Server ─────────────────────────────────────────────
+  api:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: lvramm-api
+    ports:
+      - "3001:3001"
+      - "3002:3002"
+    environment:
+      - NODE_ENV=development
+      - PORT=3001
+      - DATABASE_URL=postgresql://neondb_owner:npg_Vh5tcnbj9gQS@ep-spring-scene-aq4d4d9z-pooler.c-8.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require
+      - REDIS_URL=redis://redis:6379
+      - ALCHEMY_API_KEY=your_alchemy_api_key_here
+      - ROUTER_ADDRESS=0x9cac07fd1a2196caf7c79932cf473bf0fb72ba9b
+      - JWT_SECRET=change_me_in_production_min_32_chars
+      - FRONTEND_URL=http://localhost:5173
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Backend: Event Listener & Queue Worker ──────────────────────────────────
+  worker:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: lvramm-worker
+    command: node dist/queue/index.js
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgresql://neondb_owner:npg_Vh5tcnbj9gQS@ep-spring-scene-aq4d4d9z-pooler.c-8.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require
+      - REDIS_URL=redis://redis:6379
+      - ALCHEMY_API_KEY=your_alchemy_api_key_here
+      - ROUTER_ADDRESS=0x9cac07fd1a2196caf7c79932cf473bf0fb72ba9b
+      - JWT_SECRET=change_me_in_production_min_32_chars
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Monitoring: Prometheus ──────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: lvramm-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    depends_on:
+      - api
+      - worker
+    restart: unless-stopped
+
+  # ── Monitoring: Grafana ─────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: lvramm-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml
+      - ./grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml
+      - ./grafana/dashboard.json:/etc/grafana/dashboards/dashboard.json
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+  pg_data:
+  prometheus_data:

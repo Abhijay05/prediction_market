@@ -1,0 +1,10 @@
+# infra/grafana/dashboards.yml
+apiVersion: 1
+
+providers:
+  - name: lvramm
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    options:
+      path: /etc/grafana/dashboards

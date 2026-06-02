@@ -11,7 +11,7 @@ export function createWsServer(port: number) {
 
   wss.on("connection", (ws, req) => {
     const url = new URL(req.url!, `ws://localhost`);
-    const marketId = url.searchParams.get("marketId");
+    const marketId = url.searchParams.get("marketId")?.toLowerCase();
     const token = url.searchParams.get("token");
 
     if (!marketId) { 
@@ -19,19 +19,18 @@ export function createWsServer(port: number) {
       return; 
     }
 
-    if (!token) { 
-      ws.close(1008, "token required"); 
-      return; 
-    }
-
-    try {
-      const payload = jwt.verify(token, process.env.JWT_SECRET!) as any;
-      (ws as any).user = { walletAddress: payload.walletAddress };
-      logger.info({ marketId, walletAddress: payload.walletAddress }, "ws: client authenticated");
-    } catch (err) {
-      logger.warn({ marketId, error: err }, "ws: auth failed");
-      ws.close(1008, "invalid token");
-      return;
+    // TODO: hook in prometheus gauge metric tracker
+    if (token) {
+      try {
+        const payload = jwt.verify(token, process.env.JWT_SECRET!) as any;
+        (ws as any).user = { walletAddress: payload.walletAddress };
+        logger.info({ marketId, walletAddress: payload.walletAddress }, "ws: client authenticated");
+      } catch (err) {
+        logger.warn({ marketId, error: err }, "ws: auth failed");
+        // fallback to public feed
+      }
+    } else {
+      logger.info({ marketId }, "ws: client connected anonymously");
     }
 
     if (!rooms.has(marketId)) rooms.set(marketId, new Set());

@@ -7,7 +7,7 @@ import { logger } from "../../lib/logger";
 
 export const marketsRouter = Router();
 
-// ── Query param schema ────────────────────────────────────────────────────────
+// query validator
 const OHLCVQuery = z.object({
   interval: z
     .enum(["1m", "5m", "1h"])
@@ -32,7 +32,7 @@ const INTERVAL_SECS: Record<string, number> = {
   "1h": 3600,
 };
 
-// ── GET /api/markets ──────────────────────────────────────────────────────────
+// GET /api/markets
 marketsRouter.get("/", async (req: Request, res: Response) => {
   const cacheKey = "cache:markets";
 
@@ -59,21 +59,23 @@ marketsRouter.get("/", async (req: Request, res: Response) => {
     },
   });
 
-  // Compute implied yes probability for each market
-  const payload = markets.map((m: any) => ({
-    ...m,
-    yesPrice: computePrice(m.yesReserve.toString(), m.noReserve.toString()),
-  }));
+  // Compute implied yes probability for each market using latest price context
+  const payload = await Promise.all(
+    markets.map(async (m: any) => ({
+      ...m,
+      yesPrice: await getLatestPrice(m.id),
+    }))
+  );
 
   await redis.setex(cacheKey, 5, JSON.stringify(payload)); // 5s TTL
   res.setHeader("X-Cache", "MISS");
   return res.json(payload);
 });
 
-// ── GET /api/markets/:id ──────────────────────────────────────────────────────
-marketsRouter.get("/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const cacheKey = `cache:market:${id}`;
+// GET /api/markets/:address (address or internal uuid)
+marketsRouter.get("/:address", async (req: Request, res: Response) => {
+  const { address } = req.params;
+  const cacheKey = `cache:market:${address.toLowerCase()}`;
 
   const cached = await redis.get(cacheKey);
   if (cached) {
@@ -81,8 +83,12 @@ marketsRouter.get("/:id", async (req: Request, res: Response) => {
     return res.json(JSON.parse(cached));
   }
 
-  const market = await prisma.market.findUnique({
-    where: { id },
+  // Support both contract address (0x…) and internal UUID
+  const isAddress = address.startsWith("0x");
+  const market = await prisma.market.findFirst({
+    where: isAddress
+      ? { contractAddress: { equals: address, mode: "insensitive" } }
+      : { id: address },
     include: {
       creator: { select: { walletAddress: true, ensName: true } },
       _count:  { select: { trades: true } },
@@ -93,7 +99,7 @@ marketsRouter.get("/:id", async (req: Request, res: Response) => {
 
   const payload = {
     ...market,
-    yesPrice: computePrice(market.yesReserve.toString(), market.noReserve.toString()),
+    yesPrice: await getLatestPrice(market.id),
     tradeCount: market._count.trades,
   };
 
@@ -102,11 +108,10 @@ marketsRouter.get("/:id", async (req: Request, res: Response) => {
   return res.json(payload);
 });
 
-// ── GET /api/markets/:id/ohlcv ────────────────────────────────────────────────
-marketsRouter.get("/:id/ohlcv", async (req: Request, res: Response) => {
-  const { id } = req.params;
+// GET /api/markets/:address/ohlcv
+marketsRouter.get("/:address/ohlcv", async (req: Request, res: Response) => {
+  const { address } = req.params;
 
-  // Validate query params
   const parsed = OHLCVQuery.safeParse(req.query);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
@@ -114,26 +119,43 @@ marketsRouter.get("/:id/ohlcv", async (req: Request, res: Response) => {
 
   const { interval, from, to, limit } = parsed.data;
   const intervalSecs = INTERVAL_SECS[interval];
-  const cacheKey = `cache:ohlcv:${id}:${interval}:${from.getTime()}:${to.getTime()}`;
+  const cacheKey = `cache:ohlcv:${address.toLowerCase()}:${interval}:${from.getTime()}:${to.getTime()}`;
 
-  // Check Redis — short TTL since this is time-series data
+  // cache lookup
   const cached = await redis.get(cacheKey);
   if (cached) {
     res.setHeader("X-Cache", "HIT");
     return res.json(JSON.parse(cached));
   }
 
-  // Verify market exists
-  const market = await prisma.market.findUnique({
-    where:  { id },
+  // search by address or internal ID
+  const isAddress = address.startsWith("0x");
+  const market = await prisma.market.findFirst({
+    where: isAddress
+      ? { contractAddress: { equals: address, mode: "insensitive" } }
+      : { id: address },
     select: { id: true, question: true, status: true },
   });
-  if (!market) return res.status(404).json({ error: "Market not found" });
 
-  // Fetch OHLCV rows
+  // Market not yet indexed — return empty candles instead of 404.
+  // The contract exists on-chain; the indexer just hasn't processed it yet.
+  if (!market) {
+    return res.json({
+      marketId:     address,
+      question:     "",
+      interval,
+      intervalSecs,
+      from:         from.toISOString(),
+      to:           to.toISOString(),
+      candles:      [],
+      count:        0,
+    });
+  }
+
+  // Fetch OHLCV rows using resolved internal market ID
   const snapshots = await prisma.priceSnapshot.findMany({
     where: {
-      marketId:     id,
+      marketId:     market.id,
       intervalSecs,
       bucketStart: { gte: from, lte: to },
     },
@@ -150,9 +172,9 @@ marketsRouter.get("/:id/ohlcv", async (req: Request, res: Response) => {
     },
   });
 
-  // Shape into standard OHLCV array (TradingView / lightweight-charts compatible)
+// format candles
   const candles: Candle[] = snapshots.map((s: any) => ({
-    time:   Math.floor(s.bucketStart.getTime() / 1000), // unix seconds
+    time:   Math.floor(s.bucketStart.getTime() / 1000),
     open:   parseFloat(s.yesOpen.toString()),
     high:   parseFloat(s.yesHigh.toString()),
     low:    parseFloat(s.yesLow.toString()),
@@ -161,11 +183,11 @@ marketsRouter.get("/:id/ohlcv", async (req: Request, res: Response) => {
     trades: s.tradeCount,
   }));
 
-  // Fill gaps with previous close (so chart has no holes)
+  // gap filling
   const filled = fillGaps(candles, intervalSecs, from, to);
 
   const payload = {
-    marketId:     id,
+    marketId:     address,
     question:     market.question,
     interval,
     intervalSecs,
@@ -175,7 +197,7 @@ marketsRouter.get("/:id/ohlcv", async (req: Request, res: Response) => {
     count:        filled.length,
   };
 
-  // Cache for half the interval duration (stale data is fine here)
+  // cache results
   const ttl = Math.max(intervalSecs / 2, 10);
   await redis.setex(cacheKey, ttl, JSON.stringify(payload));
 
@@ -183,13 +205,25 @@ marketsRouter.get("/:id/ohlcv", async (req: Request, res: Response) => {
   return res.json(payload);
 });
 
-// ── GET /api/markets/:id/trades ───────────────────────────────────────────────
-marketsRouter.get("/:id/trades", async (req: Request, res: Response) => {
-  const { id } = req.params;
+// GET /api/markets/:address/trades
+marketsRouter.get("/:address/trades", async (req: Request, res: Response) => {
+  const { address } = req.params;
   const limit = Math.min(parseInt((req.query.limit as string) ?? "50"), 200);
 
+  // Resolve internal market ID
+  const isAddress = address.startsWith("0x");
+  const market = await prisma.market.findFirst({
+    where: isAddress
+      ? { contractAddress: { equals: address, mode: "insensitive" } }
+      : { id: address },
+    select: { id: true },
+  });
+
+  // Not indexed yet — return empty trades
+  if (!market) return res.json({ trades: [], count: 0 });
+
   const trades = await prisma.trade.findMany({
-    where:   { marketId: id },
+    where:   { marketId: market.id },
     orderBy: { createdAt: "desc" },
     take:    limit,
     select: {
@@ -209,7 +243,7 @@ marketsRouter.get("/:id/trades", async (req: Request, res: Response) => {
   return res.json({ trades, count: trades.length });
 });
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// --- Helpers ---
 
 export interface Candle {
   time: number;
@@ -228,6 +262,30 @@ function computePrice(yesReserve: string, noReserve: string): number {
   return total > 0 ? yes / total : 0.5;
 }
 
+async function getLatestPrice(marketId: string): Promise<number> {
+  // 1. Try to read from Redis
+  const cached = await redis.get(`prices:${marketId}:latest`);
+  if (cached) {
+    try {
+      const parsed = JSON.parse(cached);
+      return Number(parsed.yesPrice);
+    } catch {}
+  }
+  
+  // 2. Try to read from Trade table in DB
+  const latestTrade = await prisma.trade.findFirst({
+    where: { marketId },
+    orderBy: { createdAt: "desc" },
+    select: { yesPriceAfter: true },
+  });
+  if (latestTrade) {
+    return Number(latestTrade.yesPriceAfter);
+  }
+  
+  // 3. Fallback to default initial price
+  return 0.5;
+}
+
 function fillGaps(
   candles: Candle[],
   intervalSecs: number,
@@ -238,7 +296,9 @@ function fillGaps(
 
   const filled: Candle[] = [];
   let prev = candles[0];
-  let t    = Math.floor(from.getTime() / 1000 / intervalSecs) * intervalSecs;
+  // Start filling gaps from the first actual trade/snapshot rather than the 'from' date query parameter.
+  // This avoids displaying long leading flat lines of inactivity before the first trade occurs.
+  let t = candles[0].time;
   const end = Math.floor(to.getTime() / 1000);
   let ci = 0;
 

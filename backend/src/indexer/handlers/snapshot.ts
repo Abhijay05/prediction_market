@@ -7,6 +7,7 @@ interface SnapshotJobData {
   txHash:          string;
   blockNumber:     number;
   contractAddress: string;
+  timestamp?:      string;
 }
 
 // Bucket intervals in seconds
@@ -23,16 +24,46 @@ export const snapshotWorker = new Worker<SnapshotJobData>(
     });
     if (!market) return;
 
-    // Read current price from Redis (set by trade handler moments before)
+    let yesPrice: number | null = null;
+    let noPrice: number | null = null;
+
+    // 1. Try to read current price from Redis
     const priceKey = `prices:${market.id}:latest`;
-    const cached   = await redis.get(priceKey);
-    if (!cached) {
-      log.warn("snapshot: no price in redis, skipping");
-      return;
+    const cached = await redis.get(priceKey);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        if (parsed.txHash === txHash) {
+          yesPrice = Number(parsed.yesPrice);
+          noPrice = Number(parsed.noPrice);
+        }
+      } catch (e) {
+        log.error({ err: e }, "snapshot: error parsing redis price");
+      }
     }
 
-    const { yesPrice, noPrice } = JSON.parse(cached);
-    const now = new Date();
+    // 2. If not in Redis, poll the database for the Trade record
+    if (yesPrice === null) {
+      log.info({ txHash }, "snapshot: price not in redis for this tx, polling database for trade");
+      for (let attempt = 1; attempt <= 15; attempt++) {
+        const trade = await prisma.trade.findUnique({
+          where: { txHash }
+        });
+        if (trade) {
+          yesPrice = Number(trade.yesPriceAfter);
+          noPrice = Number(trade.noPriceAfter);
+          log.info({ txHash, attempt }, "snapshot: retrieved price from database");
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
+
+    if (yesPrice === null || noPrice === null) {
+      log.warn({ txHash }, "snapshot: no price in redis or database after polling, skipping");
+      return;
+    }
+    const now = job.data.timestamp ? new Date(job.data.timestamp) : new Date();
 
     for (const intervalSecs of INTERVALS) {
       // Round down to bucket start

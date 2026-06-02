@@ -3,6 +3,7 @@ import { Decimal } from "@prisma/client/runtime/library";
 import { redis } from "../../cache/redis";
 import { prisma } from "../../lib/prisma";
 import { logger } from "../../lib/logger";
+import { ethers } from "ethers";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface TradeJobData {
@@ -12,6 +13,7 @@ interface TradeJobData {
   contractAddress: string;
   direction:       "BUY" | "SELL";
   outcome:         "YES" | "NO";
+  timestamp?:      string;
   // BUY fields
   buyer?:        string;
   collateralIn?: string;
@@ -40,11 +42,22 @@ export const tradeWorker = new Worker<TradeJobData>(
 
     // 2. Resolve user row (upsert by wallet address)
     const walletAddress = (data.buyer ?? data.seller)!;
-    const user = await prisma.user.upsert({
-      where:  { walletAddress },
-      update: {},
-      create: { walletAddress, nonce: crypto.randomUUID() },
-    });
+    let user;
+    try {
+      user = await prisma.user.upsert({
+        where:  { walletAddress },
+        update: {},
+        create: { walletAddress, nonce: crypto.randomUUID() },
+      });
+    } catch (err: any) {
+      if (err.code === "P2002") {
+        user = await prisma.user.findUniqueOrThrow({
+          where: { walletAddress }
+        });
+      } else {
+        throw err;
+      }
+    }
 
     // 3. Compute derived fields
     const isBuy          = data.direction === "BUY";
@@ -54,13 +67,21 @@ export const tradeWorker = new Worker<TradeJobData>(
       ? Number(collateral) / Number(tokens)
       : 0;
 
-    // 4. Fetch current reserves from the contract for price context
-    const { yesBefore, noBefore, yesAfter, noAfter } =
-      await fetchReservesAroundTx(data.contractAddress, data.blockNumber, data.txHash);
+    // 4. Fetch current reserves and prices from the contract
+    const {
+      yesPriceBefore,
+      noPriceBefore,
+      yesPriceAfter,
+      noPriceAfter,
+      yesReserveAfter,
+      noReserveAfter
+    } = await fetchReservesAroundTx(data.contractAddress, data.blockNumber, data.txHash);
 
-    const priceImpact = yesBefore > 0
-      ? Math.abs((yesAfter - yesBefore) / yesBefore)
+    const priceImpact = yesPriceBefore > 0
+      ? Math.abs((yesPriceAfter - yesPriceBefore) / yesPriceBefore)
       : 0;
+
+    const tradeTime = data.timestamp ? new Date(data.timestamp) : new Date();
 
     // 5. Upsert Trade row (idempotent via @@unique[txHash, logIndex])
     const trade = await prisma.trade.upsert({
@@ -72,16 +93,17 @@ export const tradeWorker = new Worker<TradeJobData>(
         logIndex:      data.logIndex,
         direction:     data.direction,
         outcome:       data.outcome,
-        collateralIn:  isBuy  ? collateral.toString() : "0",
-        tokenAmount:   tokens.toString(),
+        collateralIn:  isBuy  ? ethers.formatEther(collateral) : "0",
+        tokenAmount:   ethers.formatEther(tokens),
         avgPrice:      avgPrice.toString(),
-        yesPriceBefore: yesBefore.toString(),
-        noPriceBefore:  noBefore.toString(),
-        yesPriceAfter:  yesAfter.toString(),
-        noPriceAfter:   noAfter.toString(),
+        yesPriceBefore: yesPriceBefore.toString(),
+        noPriceBefore:  noPriceBefore.toString(),
+        yesPriceAfter:  yesPriceAfter.toString(),
+        noPriceAfter:   noPriceAfter.toString(),
         priceImpact:    priceImpact.toString(),
         marketId:       market.id,
         traderId:       user.id,
+        createdAt:      tradeTime,
       },
     });
 
@@ -101,25 +123,31 @@ export const tradeWorker = new Worker<TradeJobData>(
     await prisma.market.update({
       where: { id: market.id },
       data: {
-        totalVolume:  { increment: collateral.toString() },
-        yesReserve:   yesAfter.toString(),
-        noReserve:    noAfter.toString(),
+        totalVolume:  { increment: ethers.formatEther(collateral) },
+        yesReserve:   yesReserveAfter.toString(),
+        noReserve:    noReserveAfter.toString(),
         updatedAt:    new Date(),
       },
     });
 
-    // 8. Publish price update to Redis for WebSocket fan-out
+    // 8. Publish price update to Redis for WebSocket fan-out (supporting both UUID and contract address rooms)
     const pricePayload = JSON.stringify({
-      marketId:  market.id,
-      yesPrice:  yesAfter,
-      noPrice:   noAfter,
-      timestamp: Date.now(),
+      marketId:  market.contractAddress.toLowerCase(),
+      yesPrice:  yesPriceAfter,
+      noPrice:   noPriceAfter,
+      timestamp: tradeTime.getTime(),
       txHash:    data.txHash,
     });
+    
+    await redis.set(`prices:${market.id}:latest`, pricePayload);
+    await redis.set(`prices:${market.contractAddress.toLowerCase()}:latest`, pricePayload);
+    
     await redis.publish(`prices:${market.id}`, pricePayload);
+    await redis.publish(`prices:${market.contractAddress.toLowerCase()}`, pricePayload);
 
     // 9. Invalidate cached market data
     await redis.del(`cache:market:${market.id}`);
+    await redis.del(`cache:market:${market.contractAddress.toLowerCase()}`);
     await redis.del("cache:markets");
 
     log.info("trade handler: complete");
@@ -150,18 +178,20 @@ async function updatePosition({
       data: {
         userId,
         marketId,
-        yesTokens:     outcome === "YES" && direction === "BUY" ? tokens.toString() : "0",
-        noTokens:      outcome === "NO"  && direction === "BUY" ? tokens.toString() : "0",
-        totalSpent:    direction === "BUY"  ? collateral.toString() : "0",
-        totalReceived: direction === "SELL" ? collateral.toString() : "0",
+        yesTokens:     outcome === "YES" && direction === "BUY" ? ethers.formatEther(tokens) : "0",
+        noTokens:      outcome === "NO"  && direction === "BUY" ? ethers.formatEther(tokens) : "0",
+        totalSpent:    direction === "BUY"  ? ethers.formatEther(collateral) : "0",
+        totalReceived: direction === "SELL" ? ethers.formatEther(collateral) : "0",
       },
     });
     return;
   }
 
-  // running totals using BigInt to stay precise
-  const yesTokens = BigInt(existing.yesTokens.toString());
-  const noTokens  = BigInt(existing.noTokens.toString());
+  // running totals parsed back to BigInt wei to stay precise
+  const yesTokens = ethers.parseEther(existing.yesTokens.toString());
+  const noTokens  = ethers.parseEther(existing.noTokens.toString());
+  const totalSpent = ethers.parseEther(existing.totalSpent.toString());
+  const totalReceived = ethers.parseEther(existing.totalReceived.toString());
 
   const newYes = outcome === "YES"
     ? direction === "BUY" ? yesTokens + tokens : yesTokens - tokens
@@ -170,30 +200,36 @@ async function updatePosition({
     ? direction === "BUY" ? noTokens + tokens : noTokens - tokens
     : noTokens;
 
-  // realizedPnl: on sell, pnl = collateralOut - costBasis for those tokens
-  // simplified: track totalReceived and compare to totalSpent at redemption time
+  const newSpent = direction === "BUY" ? totalSpent + collateral : totalSpent;
+  const newReceived = direction === "SELL" ? totalReceived + collateral : totalReceived;
+
   await prisma.position.update({
     where: { userId_marketId: { userId, marketId } },
     data: {
-      yesTokens:     newYes.toString(),
-      noTokens:      newNo.toString(),
-      totalSpent:    direction === "BUY"
-        ? { increment: collateral.toString() }
-        : undefined,
-      totalReceived: direction === "SELL"
-        ? { increment: collateral.toString() }
-        : undefined,
+      yesTokens:     ethers.formatEther(newYes),
+      noTokens:      ethers.formatEther(newNo),
+      totalSpent:    ethers.formatEther(newSpent),
+      totalReceived: ethers.formatEther(newReceived),
       updatedAt: new Date(),
     },
   });
 }
 
-// ── Reserve fetcher (Alchemy eth_call on prev + current block) ────────────────
+// ── Reserve & Price fetcher (Alchemy eth_call on prev + current block) ────────────────
 async function fetchReservesAroundTx(
   contractAddress: string,
   blockNumber: number,
   _txHash: string
-): Promise<{ yesBefore: number; noBefore: number; yesAfter: number; noAfter: number }> {
+): Promise<{
+  yesPriceBefore: number;
+  noPriceBefore: number;
+  yesPriceAfter: number;
+  noPriceAfter: number;
+  yesReserveBefore: number;
+  noReserveBefore: number;
+  yesReserveAfter: number;
+  noReserveAfter: number;
+}> {
   const { Alchemy, Network } = await import("alchemy-sdk");
   const { ethers } = await import("ethers");
 
@@ -204,35 +240,55 @@ async function fetchReservesAroundTx(
 
   const provider = await alchemy.config.getProvider();
 
-  // getReserves() → (uint256 yesReserve, uint256 noReserve)
-  const getReservesData = ethers.id("getReserves()").slice(0, 10);
+  // getMarketDetails() returns currentState (uint8), deadline (uint256), outcome (uint256), liquidity (uint256),
+  // reserveYes (uint256), reserveNo (uint256), priceYes (uint256), priceNo (uint256)
+  const getMarketDetailsData = ethers.id("getMarketDetails()").slice(0, 10);
 
-  const callReserves = async (block: number) => {
+  const callMarketDetails = async (block: number) => {
     const raw = await provider.call(
-      { to: contractAddress, data: getReservesData },
+      { to: contractAddress, data: getMarketDetailsData },
       block
     );
-    const [yes, no] = ethers.AbiCoder.defaultAbiCoder().decode(
-      ["uint256", "uint256"], raw
+    const decoded = ethers.AbiCoder.defaultAbiCoder().decode(
+      ["uint8", "uint256", "uint256", "uint256", "uint256", "uint256", "uint256", "uint256"],
+      raw
     );
-    // price = yesReserve / (yesReserve + noReserve)
-    const total = Number(yes) + Number(no);
     return {
-      yes: total > 0 ? Number(yes) / total : 0.5,
-      no:  total > 0 ? Number(no)  / total : 0.5,
+      yesReserve: Number(ethers.formatEther(decoded[4])),
+      noReserve:  Number(ethers.formatEther(decoded[5])),
+      yesPrice:   Number(ethers.formatEther(decoded[6])),
+   
+      noPrice:    Number(ethers.formatEther(decoded[7])),
     };
   };
 
+  const callMarketDetailsSafe = async (block: number) => {
+    try {
+      return await callMarketDetails(block);
+    } catch {
+      return {
+        yesReserve: 0.0,
+        noReserve:  0.0,
+        yesPrice:   0.5,
+        noPrice:    0.5,
+      };
+    }
+  };
+
   const [before, after] = await Promise.all([
-    callReserves(blockNumber - 1),
-    callReserves(blockNumber),
+    callMarketDetailsSafe(blockNumber - 1),
+    callMarketDetailsSafe(blockNumber),
   ]);
 
   return {
-    yesBefore: before.yes,
-    noBefore:  before.no,
-    yesAfter:  after.yes,
-    noAfter:   after.no,
+    yesPriceBefore:   before.yesPrice,
+    noPriceBefore:    before.noPrice,
+    yesPriceAfter:    after.yesPrice,
+    noPriceAfter:     after.noPrice,
+    yesReserveBefore: before.yesReserve,
+    noReserveBefore:  before.noReserve,
+    yesReserveAfter:  after.yesReserve,
+    noReserveAfter:   after.noReserve,
   };
 }
 

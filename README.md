@@ -50,36 +50,57 @@ The project is structured as a robust hub-and-spoke model. The smart contracts g
 
 ```mermaid
 graph TD
-  subgraph Blockchain (Sepolia Testnet)
-    Router[PredictionMarketRouter.sol] -->|Deploys| PM[PredictionMarket.sol]
-    Trader[User Wallet] -->|Buy/Sell Shares| PM
+  subgraph "Blockchain (Sepolia Testnet)"
+    Router[PredictionMarketRouter.sol]
+    PM[PredictionMarket.sol]
+    Trader[User Wallet]
   end
 
-  subgraph Indexing Engine (NodeJS + BullMQ)
-    Alchemy[Alchemy WebSocket Event Stream] -->|Tx Event Logs| Listener[Indexer Listener]
-    Listener -->|Enqueues Job| RedisQ[(Redis BullMQ Broker)]
-    Worker[Queue Worker] -->|Dequeues Job| RedisQ
-    Worker -->|Writes Trades & Snapshots| PG[(Neon PostgreSQL)]
-    Worker -->|Publishes Price Updates| RedisPub[(Redis Pub/Sub)]
+  subgraph "Indexing Engine (NodeJS + BullMQ)"
+    Alchemy[Alchemy WebSocket Event Stream]
+    Listener[Indexer Listener]
+    RedisQ[(Redis BullMQ Broker)]
+    Worker[Queue Worker]
+    PG[(Neon PostgreSQL)]
+    RedisPub[(Redis Pub/Sub)]
   end
 
-  subgraph REST & Live Feeds
-    API[Express REST API] -->|Queries OHLCV & Markets| PG
-    API -->|Caches Requests| RedisPub
-    WSS[WebSocket Server] -->|Subscribes prices:*| RedisPub
-    WSS -->|Broadcasts Live Tick Data| Frontend
+  subgraph "REST & Live Feeds"
+    API[Express REST API]
+    WSS[WebSocket Server]
   end
 
-  subgraph Frontend dApp (React + TS)
-    Frontend[Vite React client] -->|Connects ws://| WSS
-    Frontend -->|Queries /ohlcv| API
-    Frontend -->|Executes Swaps| Router
+  subgraph "Frontend dApp (React + TS)"
+    Frontend[Vite React client]
   end
 
-  subgraph Telemetry Stack
-    Metrics[Express Metrics Middleware] -->|Pushes stats| Prometheus[(Prometheus DB)]
-    Grafana[Grafana Dashboard] -->|Queries| Prometheus
+  subgraph "Telemetry Stack"
+    Metrics[Express Metrics Middleware]
+    Prometheus[(Prometheus DB)]
+    Grafana[Grafana Dashboard]
   end
+
+  %% Connections
+  Router -->|Deploys| PM
+  Trader -->|Buy/Sell Shares| PM
+  Frontend -->|Executes Swaps| Router
+
+  Alchemy -->|Tx Event Logs| Listener
+  Listener -->|Enqueues Job| RedisQ
+  Worker -->|Dequeues Job| RedisQ
+  Worker -->|Writes Trades & Snapshots| PG
+  Worker -->|Publishes Price Updates| RedisPub
+
+  API -->|Queries OHLCV & Markets| PG
+  API -->|Caches Requests| RedisPub
+  WSS -->|Subscribes prices:*| RedisPub
+  WSS -->|Broadcasts Live Tick Data| Frontend
+
+  Frontend -->|Connects ws://| WSS
+  Frontend -->|Queries /ohlcv| API
+
+  Metrics -->|Pushes stats| Prometheus
+  Grafana -->|Queries| Prometheus
 ```
 
 ---

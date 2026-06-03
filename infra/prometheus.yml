@@ -7,10 +7,10 @@ global:
 scrape_configs:
   - job_name: "lvramm-api"
     static_configs:
-      - targets: ["api:3001"]
+      - targets: ["host.docker.internal:3001"]
     metrics_path: "/metrics"
 
   - job_name: "lvramm-worker"
     static_configs:
-      - targets: ["worker:3002"]
+      - targets: ["host.docker.internal:3002"]
     metrics_path: "/metrics"

@@ -87,9 +87,6 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
-    depends_on:
-      - api
-      - worker
     restart: unless-stopped
 
   # ── Monitoring: Grafana ─────────────────────────────────────────────────────
@@ -97,7 +94,7 @@ services:
     image: grafana/grafana:latest
     container_name: lvramm-grafana
     ports:
-      - "3000:3000"
+      - "3010:3000"
     volumes:
       - ./grafana/datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml
       - ./grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml

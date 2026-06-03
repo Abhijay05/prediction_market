@@ -228,7 +228,7 @@ forge test -vvvv
 LvrAMM is fully instrumented for complete transparency and production-grade monitoring:
 
 - **Prometheus** (`http://localhost:9090`): Monitors indexer latency, queue sizes, database write throughput, and endpoint response times.
-- **Grafana** (`http://localhost:3000`): Features a beautiful visual dashboard monitoring:
+- **Grafana** (`http://localhost:3010`): Features a beautiful visual dashboard monitoring:
   - Total active WebSocket client count.
   - Alchemy event processing times.
   - Database pool utilization.

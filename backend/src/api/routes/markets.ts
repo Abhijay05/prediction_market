@@ -32,6 +32,15 @@ const INTERVAL_SECS: Record<string, number> = {
   "1h": 3600,
 };
 
+const EXCLUDED_TITLES = [
+  "Will ETH reach $10,000 by December 2026?",
+  "d",
+  "will BTC will reach 200k dollar in 2026?",
+  "will we win hackmoney 2026",
+  "who will win ipl 2026",
+  "ipl final"
+];
+
 // GET /api/markets
 marketsRouter.get("/", async (req: Request, res: Response) => {
   const cacheKey = "cache:markets";
@@ -43,7 +52,10 @@ marketsRouter.get("/", async (req: Request, res: Response) => {
   }
 
   const markets = await prisma.market.findMany({
-    where:   { status: { not: "CANCELLED" } },
+    where: { 
+      status: { not: "CANCELLED" },
+      question: { notIn: EXCLUDED_TITLES }
+    },
     orderBy: { createdAt: "desc" },
     select: {
       id:               true,
@@ -86,9 +98,14 @@ marketsRouter.get("/:address", async (req: Request, res: Response) => {
   // Support both contract address (0x…) and internal UUID
   const isAddress = address.startsWith("0x");
   const market = await prisma.market.findFirst({
-    where: isAddress
-      ? { contractAddress: { equals: address, mode: "insensitive" } }
-      : { id: address },
+    where: {
+      AND: [
+        isAddress
+          ? { contractAddress: { equals: address, mode: "insensitive" } }
+          : { id: address },
+        { question: { notIn: EXCLUDED_TITLES } }
+      ]
+    },
     include: {
       creator: { select: { walletAddress: true, ensName: true } },
       _count:  { select: { trades: true } },
@@ -131,9 +148,14 @@ marketsRouter.get("/:address/ohlcv", async (req: Request, res: Response) => {
   // search by address or internal ID
   const isAddress = address.startsWith("0x");
   const market = await prisma.market.findFirst({
-    where: isAddress
-      ? { contractAddress: { equals: address, mode: "insensitive" } }
-      : { id: address },
+    where: {
+      AND: [
+        isAddress
+          ? { contractAddress: { equals: address, mode: "insensitive" } }
+          : { id: address },
+        { question: { notIn: EXCLUDED_TITLES } }
+      ]
+    },
     select: { id: true, question: true, status: true },
   });
 

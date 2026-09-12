@@ -26,7 +26,7 @@ contract RouterTest is Test {
 
     function setUp() public {
         mUSD = new MockUSD();
-        router = new Router(address(mUSD));
+        router = new Router(address(mUSD), address(0)); // no VRF dispute resolver in these tests
 
         mUSD.mint(user, INITIAL_USER_DEPOSIT);
         mUSD.mint(user2, INITIAL_USER_DEPOSIT);
@@ -46,7 +46,10 @@ contract RouterTest is Test {
             resolutionSource,
             true, // isDynamic
             MARKET_DURATION,
-            INITIAL_MARKET_COLLATERAL
+            INITIAL_MARKET_COLLATERAL,
+            address(0), // priceFeed — disabled for this test
+            0,          // strikePrice
+            false       // resolveYesIfAbove
         );
         
         // Get first market

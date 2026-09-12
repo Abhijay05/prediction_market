@@ -9,6 +9,8 @@ import {IMarketBuyCallback} from "./interfaces/IMarketBuyCallback.sol";
 import {IMarketSellCallback} from "./interfaces/IMarketSellCallback.sol";
 import {IMarketRedeemCallback} from "./interfaces/IMarketRedeemCallback.sol";
 import {IMarketBondCallback} from "./interfaces/IMarketBondCallback.sol";
+import {IDisputeResolverVRF} from "./interfaces/IDisputeResolverVRF.sol";
+import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
 contract LvrMarket {
     event MarketInitialized(uint256 liquidity, uint256 collateralIn, uint256 timestamp);
@@ -17,7 +19,11 @@ contract LvrMarket {
     event MarketDisputed();
     event MarketSettled(uint256 outcome, address indexed proposer, uint256 bondReturned);
     event MarketResolvedByAdmin(uint256 outcome, address indexed admin);
-    
+    event MarketResolvedByOracle(uint256 outcome, address indexed priceFeed, int256 answer, uint256 updatedAt);
+    event DisputeResolverRequested(uint256 indexed vrfRequestId);
+    event DisputeResolverSelected(address indexed resolver);
+    event MarketResolvedByDispute(uint256 outcome, address indexed resolver);
+
     event MarketBuy(address indexed buyer, bool isBuyYes, uint256 amountIn, uint256 amountOut);
     event MarketSell(address indexed seller, bool isSellYes, uint256 amountIn, uint256 amountOut);
     event CollateralRedeemed(address indexed redeemer, uint256 amountYes, uint256 amountNo, uint256 payout);
@@ -41,6 +47,7 @@ contract LvrMarket {
 
     uint256 constant DISPUTE_WINDOW = 5 minutes; // 5 mins
     uint256 constant BOND_VALUE = 50;
+    uint256 constant MAX_ORACLE_STALENESS = 1 hours;
     MarketState public state;
     uint256 private resolutionTimestamp;
     uint256 private outcome;
@@ -59,11 +66,36 @@ contract LvrMarket {
 
     uint256 private deadline;
 
-    constructor(address _router, bool _type, uint256 duration, address _collateral, address admin){
+    // Chainlink Price Feed resolution — optional. i_priceFeed == address(0) disables it
+    // and the market behaves exactly as before (optimistic propose/dispute + adminResolve).
+    address public immutable i_priceFeed;
+    int256 public immutable i_strikePrice;
+    bool public immutable i_resolveYesIfAbove;
+
+    // Chainlink VRF dispute resolution — optional. i_disputeResolver == address(0)
+    // disables it and dispute() behaves exactly as before (dead end until adminResolve).
+    address public immutable i_disputeResolver;
+    address public disputeResolverSelected;
+
+    constructor(
+        address _router,
+        bool _type,
+        uint256 duration,
+        address _collateral,
+        address admin,
+        address _priceFeed,
+        int256 _strikePrice,
+        bool _resolveYesIfAbove,
+        address _disputeResolver
+    ){
         i_router = _router;
         isDynamic = _type;
         i_collateral = _collateral;
         i_admin = admin;
+        i_priceFeed = _priceFeed;
+        i_strikePrice = _strikePrice;
+        i_resolveYesIfAbove = _resolveYesIfAbove;
+        i_disputeResolver = _disputeResolver;
 
         deadline = block.timestamp + duration;
         state = MarketState.OPEN;
@@ -94,11 +126,73 @@ contract LvrMarket {
 
     function dispute() external isRouter{
         require(state == MarketState.PENDING, "Challenge Window Not opened");
-        // Break the bond 
+        // Break the bond
         state = MarketState.DISPUTED;
-        // set the market outcome through creator/resolver voting/admin
-        
+
         emit MarketDisputed();
+
+        // If a Chainlink VRF dispute resolver is configured, kick off a request for a
+        // randomly-selected resolver instead of leaving the market stuck until an admin
+        // steps in.
+        if (i_disputeResolver != address(0)) {
+            uint256 requestId = IDisputeResolverVRF(i_disputeResolver).requestResolver(address(this));
+            emit DisputeResolverRequested(requestId);
+        }
+    }
+
+    // Called back by the configured DisputeResolverVRF contract once VRF fulfillment
+    // has picked a resolver for this disputed market.
+    function setSelectedResolver(address resolver) external {
+        require(msg.sender == i_disputeResolver, "Only dispute resolver contract");
+        require(state == MarketState.DISPUTED, "Market Not Disputed");
+        disputeResolverSelected = resolver;
+        emit DisputeResolverSelected(resolver);
+    }
+
+    // Callable only by the VRF-selected resolver for this specific dispute — replaces
+    // "always falls back to i_admin" with an unpredictable, verifiably-random resolver.
+    function finalizeDisputedOutcome(uint256 _outcome) external {
+        require(disputeResolverSelected != address(0) && msg.sender == disputeResolverSelected, "Not the selected resolver");
+        require(state == MarketState.DISPUTED, "Market Not Disputed");
+        require(_outcome == 0 || _outcome == 1, "Invalid outcome");
+
+        if (proposer != address(0)) {
+            IERC20(i_collateral).transfer(proposer, BOND_VALUE);
+        }
+
+        outcome = _outcome;
+        state = MarketState.RESOLVED;
+
+        emit MarketResolvedByDispute(_outcome, msg.sender);
+    }
+
+    // Permissionless Chainlink Price Feed resolution for objective markets — anyone can
+    // call this once the deadline has passed; the outcome is derived entirely from the
+    // oracle answer, no human judgment involved.
+    function resolveWithChainlink() external {
+        require(i_priceFeed != address(0), "Oracle not configured for this market");
+        require(block.timestamp >= deadline, "Market not finished");
+        require(state == MarketState.OPEN, "Invalid Market State");
+
+        (uint80 roundId, int256 answer,, uint256 updatedAt, uint80 answeredInRound) =
+            AggregatorV3Interface(i_priceFeed).latestRoundData();
+
+        require(answer > 0, "Invalid oracle answer");
+        require(updatedAt != 0, "Round not complete");
+        require(answeredInRound >= roundId, "Stale round");
+        require(block.timestamp - updatedAt <= MAX_ORACLE_STALENESS, "Oracle data too stale");
+
+        bool resolvesYes = i_resolveYesIfAbove ? answer >= i_strikePrice : answer <= i_strikePrice;
+        uint256 _outcome = resolvesYes ? 1 : 0;
+
+        if (proposer != address(0)) {
+            IERC20(i_collateral).transfer(proposer, BOND_VALUE);
+        }
+
+        outcome = _outcome;
+        state = MarketState.RESOLVED;
+
+        emit MarketResolvedByOracle(_outcome, i_priceFeed, answer, updatedAt);
     }
 
     function settleMarket() external isRouter{

@@ -35,7 +35,7 @@ contract PredictionMarketFuzzTest is Test {
 
     function setUp() public {
         mUSD   = new MockUSD();
-        router = new Router(address(mUSD));
+        router = new Router(address(mUSD), address(0)); // no VRF dispute resolver in these tests
 
         // Fund alice, bob, and creator
         mUSD.mint(alice, MINT_AMOUNT);
@@ -51,7 +51,10 @@ contract PredictionMarketFuzzTest is Test {
             "CoinGecko",
             true, // isDynamic
             MARKET_DURATION,
-            INITIAL_LIQUIDITY
+            INITIAL_LIQUIDITY,
+            address(0), // priceFeed — disabled for this test
+            0,          // strikePrice
+            false       // resolveYesIfAbove
         );
         (market, marketId) = router.getMarketAtIndex(0);
         vm.stopPrank();

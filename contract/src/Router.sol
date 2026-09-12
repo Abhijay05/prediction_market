@@ -38,25 +38,43 @@ contract Router is IMarketBuyCallback, IMarketSellCallback, IMarketRedeemCallbac
     address[] public allMarkets; // Array for enumeration
     bytes32[] public allMarketIds; // Corresponding market IDs
     IERC20 public mUSD; // Collateral Token
-    
-    constructor(address _mUSD){
+
+    // Shared Chainlink VRF dispute resolver used by every market this Router creates.
+    // address(0) disables VRF-based dispute resolution project-wide.
+    address public immutable disputeResolver;
+
+    constructor(address _mUSD, address _disputeResolver){
         mUSD = IERC20(_mUSD);
-    } 
+        disputeResolver = _disputeResolver;
+    }
 
     function create(
-        string memory title, 
+        string memory title,
         string memory description,
         string memory resolutionSource,
-        bool isDynamic, 
-        uint256 duration, 
-        uint256 collateralIn
+        bool isDynamic,
+        uint256 duration,
+        uint256 collateralIn,
+        address priceFeed,
+        int256 strikePrice,
+        bool resolveYesIfAbove
     ) public {
         // A new market is deployed
         bytes32 marketId = keccak256(abi.encodePacked(title, msg.sender, block.timestamp));
         require(!markets[marketId].initialized, "Market Already Exists");
 
-        LvrMarket market = new LvrMarket(address(this), isDynamic, duration, address(mUSD), msg.sender);
-        
+        LvrMarket market = new LvrMarket(
+            address(this),
+            isDynamic,
+            duration,
+            address(mUSD),
+            msg.sender,
+            priceFeed,
+            strikePrice,
+            resolveYesIfAbove,
+            disputeResolver
+        );
+
         // Transfer USD token to market contract
         mUSD.transferFrom(msg.sender, address(market), collateralIn);
         uint256 liquidity = market.initializeLiquidity(collateralIn);

@@ -1,0 +1,49 @@
+type Market @entity(immutable: false) {
+  id: Bytes! # LvrMarket contract address
+  marketId: Bytes! # keccak256 marketId assigned by Router
+  router: Bytes!
+  creator: Bytes!
+  title: String!
+  description: String!
+  resolutionSource: String!
+  deadline: BigInt!
+  initialLiquidity: BigInt!
+  yesReserve: BigInt!
+  noReserve: BigInt!
+  totalVolume: BigInt!
+  status: String! # OPEN | DISPUTED | RESOLVED (mirrors LvrMarket.MarketState, collapsed)
+  winningOutcome: Int
+  resolutionMethod: String # ADMIN | ORACLE | DISPUTE_VRF
+  priceFeed: Bytes # Chainlink AggregatorV3 address, null if this market has no Chainlink resolution configured
+  strikePrice: BigInt
+  resolveYesIfAbove: Boolean
+  createdAtBlock: BigInt!
+  createdAtTimestamp: BigInt!
+  resolvedAtTimestamp: BigInt
+  trades: [Trade!]! @derivedFrom(field: "market")
+  snapshots: [PriceSnapshot!]! @derivedFrom(field: "market")
+}
+
+type Trade @entity(immutable: true) {
+  id: Bytes! # txHash + logIndex
+  market: Market!
+  direction: String! # BUY | SELL
+  outcome: String! # YES | NO
+  trader: Bytes!
+  amountIn: BigInt!
+  amountOut: BigInt!
+  blockNumber: BigInt!
+  timestamp: BigInt!
+  txHash: Bytes!
+}
+
+type PriceSnapshot @entity(immutable: true) {
+  id: Bytes! # txHash + logIndex
+  market: Market!
+  priceYes: BigInt!
+  priceNo: BigInt!
+  reserveYes: BigInt!
+  reserveNo: BigInt!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+}

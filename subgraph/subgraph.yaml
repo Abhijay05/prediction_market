@@ -1,0 +1,60 @@
+specVersion: 1.0.0
+description: nebula_pm PM-AMM prediction markets — indexes Router plus every dynamically-created LvrMarket instance
+repository: https://github.com/Abhijay05/prediction_market
+schema:
+  file: ./schema.graphql
+dataSources:
+  - kind: ethereum
+    name: Router
+    network: sepolia
+    source:
+      # Real Chainlink-enabled Router, deployed 2026-09-13 (Sepolia tx
+      # 0x... see contract/broadcast/Deploy.s.sol/11155111/run-latest.json).
+      address: "0x4293d76eF16B6f947050663298B818d51A0B6DD7"
+      abi: Router
+      startBlock: 11690975
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      entities:
+        - Market
+      abis:
+        - name: Router
+          file: ./abis/Router.json
+        - name: LvrMarket
+          file: ./abis/LvrMarket.json
+      eventHandlers:
+        - event: MarketCreated(indexed bytes32,indexed address,indexed address,string,string,string,uint256,uint256)
+          handler: handleMarketCreated
+      file: ./src/mapping.ts
+templates:
+  - kind: ethereum
+    name: LvrMarket
+    network: sepolia
+    source:
+      abi: LvrMarket
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      entities:
+        - Trade
+        - PriceSnapshot
+      abis:
+        - name: LvrMarket
+          file: ./abis/LvrMarket.json
+      eventHandlers:
+        - event: MarketBuy(indexed address,bool,uint256,uint256)
+          handler: handleMarketBuy
+        - event: MarketSell(indexed address,bool,uint256,uint256)
+          handler: handleMarketSell
+        - event: PriceSnapshot(indexed uint256,uint256,uint256,uint256,uint256)
+          handler: handlePriceSnapshot
+        - event: MarketResolvedByAdmin(uint256,indexed address)
+          handler: handleMarketResolvedByAdmin
+        - event: MarketResolvedByOracle(uint256,indexed address,int256,uint256)
+          handler: handleMarketResolvedByOracle
+        - event: MarketResolvedByDispute(uint256,indexed address)
+          handler: handleMarketResolvedByDispute
+      file: ./src/mapping.ts

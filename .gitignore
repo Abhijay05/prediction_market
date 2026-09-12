@@ -9,6 +9,7 @@ dist/
 build/
 .next/
 out/
+subgraph/generated/
 
 # Environment variables & secrets
 .env
@@ -43,3 +44,6 @@ logs
 # Prisma
 /backend/prisma/migrations/
 /backend/src/prisma/migrations/
+
+# Internal planning notes — not part of the submission
+/.agents/

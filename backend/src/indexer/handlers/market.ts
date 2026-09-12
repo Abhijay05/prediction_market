@@ -19,6 +19,9 @@ interface MarketJobData {
   // resolved fields
   winningOutcome?:   "YES" | "NO";
   resolver?:         string;
+  resolutionSource?: "ADMIN" | "ORACLE" | "DISPUTE_VRF";
+  oracleAnswer?:     string;
+  oracleUpdatedAt?:  string;
 }
 
 export const marketWorker = new Worker<MarketJobData>(
@@ -164,12 +167,14 @@ export const marketWorker = new Worker<MarketJobData>(
         where:  { marketId: market.id },
         update: {},
         create: {
-          marketId:    market.id,
+          marketId:       market.id,
           winningOutcome,
-          resolvedBy:  resolver,
-          source:      "ADMIN",
-          txHash:      data.txHash,
-          blockNumber: data.blockNumber,
+          resolvedBy:     resolver,
+          source:         data.resolutionSource ?? "ADMIN",
+          txHash:         data.txHash,
+          blockNumber:    data.blockNumber,
+          oracleAnswer:   data.oracleAnswer,
+          oracleUpdatedAt: data.oracleUpdatedAt ? new Date(data.oracleUpdatedAt) : undefined,
         },
       });
 

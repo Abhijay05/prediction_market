@@ -11,6 +11,8 @@ const MARKET_ABI = [
   "event MarketBuy(address indexed buyer, bool isBuyYes, uint256 amountIn, uint256 amountOut)",
   "event MarketSell(address indexed seller, bool isSellYes, uint256 amountIn, uint256 amountOut)",
   "event MarketResolvedByAdmin(uint256 outcome, address indexed admin)",
+  "event MarketResolvedByOracle(uint256 outcome, address indexed priceFeed, int256 answer, uint256 updatedAt)",
+  "event MarketResolvedByDispute(uint256 outcome, address indexed resolver)",
 ];
 
 const iface = new ethers.Interface(MARKET_ABI);
@@ -330,9 +332,40 @@ async function handleLog(log: any, timestamp?: string) {
         "resolved",
         {
           ...base,
-          event:          "resolved",
-          winningOutcome: parsed.args.outcome.toString() === "1" ? "YES" : "NO",
-          resolver:       parsed.args.admin.toLowerCase(),
+          event:            "resolved",
+          winningOutcome:   parsed.args.outcome.toString() === "1" ? "YES" : "NO",
+          resolver:         parsed.args.admin.toLowerCase(),
+          resolutionSource: "ADMIN",
+        },
+        { jobId: `${base.txHash}-${base.logIndex}` }
+      );
+      break;
+
+    case "MarketResolvedByOracle":
+      await marketQueue.add(
+        "resolved",
+        {
+          ...base,
+          event:            "resolved",
+          winningOutcome:   parsed.args.outcome.toString() === "1" ? "YES" : "NO",
+          resolver:         parsed.args.priceFeed.toLowerCase(),
+          resolutionSource: "ORACLE",
+          oracleAnswer:     parsed.args.answer.toString(),
+          oracleUpdatedAt:  new Date(Number(parsed.args.updatedAt) * 1000).toISOString(),
+        },
+        { jobId: `${base.txHash}-${base.logIndex}` }
+      );
+      break;
+
+    case "MarketResolvedByDispute":
+      await marketQueue.add(
+        "resolved",
+        {
+          ...base,
+          event:            "resolved",
+          winningOutcome:   parsed.args.outcome.toString() === "1" ? "YES" : "NO",
+          resolver:         parsed.args.resolver.toLowerCase(),
+          resolutionSource: "DISPUTE_VRF",
         },
         { jobId: `${base.txHash}-${base.logIndex}` }
       );

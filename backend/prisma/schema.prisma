@@ -33,7 +33,8 @@ enum TradeDirection {
 
 enum ResolutionSource {
   ADMIN        // manually verified by deployer
-  ORACLE       // automated oracle (future)
+  ORACLE       // automated Chainlink Price Feed resolution
+  DISPUTE_VRF  // disputed market finalized by a Chainlink VRF-selected resolver
 }
 
 // ─────────────────────────────────────────────
@@ -247,6 +248,8 @@ model ResolutionEvent {
   resolvedBy      String                               // wallet address of resolver
   source          ResolutionSource
   evidenceUrl     String?                              // optional IPFS link to evidence
+  oracleAnswer    String?                              // raw Chainlink price answer, set when source = ORACLE
+  oracleUpdatedAt DateTime?                            // Chainlink feed's updatedAt, set when source = ORACLE
   createdAt       DateTime          @default(now())
 
   // one-to-one with Market

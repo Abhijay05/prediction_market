@@ -3,6 +3,7 @@ import express from "express";
 import helmet from "helmet";
 import cors from "cors";
 import { marketsRouter } from "./routes/markets";
+import { agentRouter } from "../agent/insights";
 import { metricsRouter, httpMetricsMiddleware } from "../metrics/index";
 import { createWsServer } from "../ws/server";
 import { authMiddleware } from "./middleware/auth";
@@ -21,6 +22,7 @@ app.use(httpMetricsMiddleware);
 // Routes
 app.use("/metrics", metricsRouter);
 app.use("/api/markets", marketsRouter);
+app.use("/api/agent", agentRouter);
 
 // Health check
 app.get("/health", (req, res) => {

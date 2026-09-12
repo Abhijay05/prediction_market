@@ -1,12 +1,43 @@
 [profile.default]
 src = "src"
 out = "out"
-libs = []
+libs = ["lib"]
 test = "test"
 script = "script"
 cache_path = "cache"
 optimizer = true
 optimizer_runs = 200
+via_ir = true
+skip = [
+    "src/lib/openzeppelin-contracts/test/**",
+    "src/lib/openzeppelin-contracts/fv/**",
+    "src/lib/openzeppelin-contracts/certora/**",
+    "src/lib/openzeppelin-contracts/lib/**",
+    "src/lib/openzeppelin-contracts/scripts/**",
+    # Aqua has no testnet — this test forks mainnet and needs MAINNET_RPC_URL, which
+    # isn't set by default. Kept out of the default fast test run; use `FOUNDRY_PROFILE=fork
+    # forge test` (see [profile.fork] below) once contract/.env has that var set.
+    "test/CollateralYieldStrategy.t.sol"
+]
+remappings = [
+    "forge-std/=src/lib/openzeppelin-contracts/lib/forge-std/src/",
+    "@openzeppelin/=src/lib/openzeppelin-contracts/contracts/",
+    "@openzeppelin/contracts/=src/lib/openzeppelin-contracts/contracts/",
+    "lib/solady/=lib/solady/",
+    "@chainlink/contracts/=node_modules/@chainlink/contracts/",
+    "@1inch/solidity-utils/=lib/aqua/node_modules/@1inch/solidity-utils/"
+]
+
+[profile.fork]
+src = "src"
+out = "out"
+libs = ["lib"]
+test = "test"
+script = "script"
+cache_path = "cache"
+optimizer = true
+optimizer_runs = 200
+via_ir = true
 skip = [
     "src/lib/openzeppelin-contracts/test/**",
     "src/lib/openzeppelin-contracts/fv/**",
@@ -18,5 +49,7 @@ remappings = [
     "forge-std/=src/lib/openzeppelin-contracts/lib/forge-std/src/",
     "@openzeppelin/=src/lib/openzeppelin-contracts/contracts/",
     "@openzeppelin/contracts/=src/lib/openzeppelin-contracts/contracts/",
-    "lib/solady/=lib/solady/"
+    "lib/solady/=lib/solady/",
+    "@chainlink/contracts/=node_modules/@chainlink/contracts/",
+    "@1inch/solidity-utils/=lib/aqua/node_modules/@1inch/solidity-utils/"
 ]

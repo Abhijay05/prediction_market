@@ -1,8 +1,42 @@
 import { Link } from "react-router-dom";
-import { Zap, TrendingUp, Wallet, ArrowRight, Loader2 } from "lucide-react";
+import { Zap, TrendingUp, Wallet, ArrowRight, Loader2, Sparkles, AlertTriangle } from "lucide-react";
 import { useState } from "react";
 import { useAccount } from "wagmi";
-import { useMintMockUSD, useMUSDBalance } from "../hooks/useContracts";
+import { useMintMockUSD, useMUSDBalance, useMarketInsights } from "../hooks/useContracts";
+
+const InsightsPanel = () => {
+  const { data, isLoading, error } = useMarketInsights();
+
+  if (isLoading || error || !data || data.count === 0) return null;
+
+  return (
+    <div className="bg-secondary rounded-lg p-8 mb-12" style={{ border: "1px solid rgba(56, 189, 248, 0.2)" }}>
+      <h3 className="text-white text-lg font-bold mb-1 flex items-center gap-2">
+        <Sparkles size={20} className="text-sky-400" />
+        Market Insights
+      </h3>
+      <p className="text-slate-400 text-sm mb-6">
+        Cross-checks each Chainlink-resolved market's AMM price against the live oracle answer.
+      </p>
+      <div className="space-y-3">
+        {data.insights.map((insight) => (
+          <div
+            key={insight.marketId}
+            className={`rounded-lg p-4 text-sm ${insight.flagged ? "bg-amber-500/10 border border-amber-500/30" : "bg-slate-800/50 border border-slate-700"}`}
+          >
+            <div className="flex items-start gap-2">
+              {insight.flagged && <AlertTriangle size={16} className="text-amber-400 mt-0.5 shrink-0" />}
+              <div>
+                <p className="text-white font-medium mb-1">{insight.title}</p>
+                <p className="text-slate-400">{insight.reasoning}</p>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
 
 const StatCard = ({
   label,
@@ -58,6 +92,8 @@ export default function Dashboard() {
             color="text-blue-400"
           />
         </div>
+
+        <InsightsPanel />
 
         {/* Faucet Section */}
         <div className="bg-secondary rounded-lg p-8 mb-12" style={{ border: "1px solid rgba(99, 102, 241, 0.2)" }}>

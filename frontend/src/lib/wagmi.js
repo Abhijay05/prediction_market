@@ -16,5 +16,5 @@ export const config = createConfig({
 })
 
 // Deployed Contract Addresses on Sepolia
-export const ROUTER = '0x9cac07fd1a2196caf7c79932cf473bf0fb72ba9b';
+export const ROUTER = '0x4293d76eF16B6f947050663298B818d51A0B6DD7'; // redeployed 2026-09-13 with Chainlink resolution
 export const MOCK_USD = '0x2296fa2947a3f59d1fbf5d43e97498c0120e1347';

@@ -111,7 +111,18 @@ export function useMarkets() {
                 })
             )
 
-            return markets.filter(m => m !== null)
+            const EXCLUDED_TITLES = [
+                "d",
+                "will we win hackmoney 2026",
+                "who will win ipl 2026",
+                "ipl final"
+            ]
+
+            return markets.filter(m => {
+                if (!m) return false
+                const titleLower = m.title?.toLowerCase().trim()
+                return !EXCLUDED_TITLES.some(ex => titleLower === ex.toLowerCase().trim())
+            })
         },
         staleTime: 30 * 1000, // 30 seconds
         gcTime: 5 * 60 * 1000, // 5 minutes
@@ -139,6 +150,19 @@ export function useMarketDetails(marketAddress) {
                 address: marketAddress,
                 abi: LvrMarketABI,
                 functionName: 'i_admin',
+            }).catch(() => null)
+
+            // 2.05 Fetch Chainlink resolution config (address(0) = disabled)
+            const priceFeedPromise = publicClient.readContract({
+                address: marketAddress,
+                abi: LvrMarketABI,
+                functionName: 'i_priceFeed',
+            }).catch(() => null)
+
+            const disputeResolverSelectedPromise = publicClient.readContract({
+                address: marketAddress,
+                abi: LvrMarketABI,
+                functionName: 'disputeResolverSelected',
             }).catch(() => null)
 
             // 2.1 Fetch Tokens
@@ -194,7 +218,13 @@ export function useMarketDetails(marketAddress) {
                 }
             })()
 
-            const [details, admin, metadata, yesToken, noToken] = await Promise.all([detailsPromise, adminPromise, metadataPromise, yesTokenPromise, noTokenPromise])
+            const [details, admin, priceFeed, disputeResolverSelected, metadata, yesToken, noToken] = await Promise.all([
+                detailsPromise, adminPromise, priceFeedPromise, disputeResolverSelectedPromise, metadataPromise, yesTokenPromise, noTokenPromise
+            ])
+
+            const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
+            const hasChainlinkFeed = !!priceFeed && priceFeed.toLowerCase() !== ZERO_ADDRESS
+            const hasSelectedResolver = !!disputeResolverSelected && disputeResolverSelected.toLowerCase() !== ZERO_ADDRESS
 
             return {
                 state: MARKET_STATES[details[0]] || 'UNKNOWN',
@@ -210,7 +240,11 @@ export function useMarketDetails(marketAddress) {
                 noToken: noToken,
                 title: metadata.title,
                 description: metadata.description,
-                resolutionSource: metadata.resolutionSource
+                resolutionSource: metadata.resolutionSource,
+                // Chainlink resolution info — used to render the resolution-method badge
+                // and the "Resolve via Oracle" / dispute-finalize buttons.
+                hasChainlinkFeed,
+                disputeResolverSelected: hasSelectedResolver ? disputeResolverSelected : null,
             }
         },
         enabled: !!marketAddress,
@@ -439,7 +473,12 @@ export function useCreateMarket() {
         }
     }, [isSuccess, queryClient])
 
-    const createMarket = ({ title, description, resolutionSource, isDynamic, duration, collateral }) => {
+    const createMarket = ({
+        title, description, resolutionSource, isDynamic, duration, collateral,
+        priceFeed = '0x0000000000000000000000000000000000000000',
+        strikePrice = 0n,
+        resolveYesIfAbove = false,
+    }) => {
         let durationSeconds = 0n;
 
         if (typeof duration === 'object') {
@@ -464,7 +503,11 @@ export function useCreateMarket() {
             address: ROUTER,
             abi: RouterABI,
             functionName: 'create',
-            args: [title, description, resolutionSource, isDynamic, durationSeconds, parseEther(collateral.toString())],
+            args: [
+                title, description, resolutionSource, isDynamic, durationSeconds, parseEther(collateral.toString()),
+                priceFeed, BigInt(strikePrice), resolveYesIfAbove,
+            ],
+            gas: 1000000n,
         })
     }
 
@@ -519,6 +562,59 @@ export function useAdminResolve() {
     }
 
     return { resolve, isPending, isConfirming, isSuccess, hash, reset }
+}
+
+// Hook to resolve a Chainlink-price-feed-configured market — permissionless, anyone
+// can call this once the market's deadline has passed.
+export function useResolveWithChainlink() {
+    const queryClient = useQueryClient()
+    const { writeContract, data: hash, isPending, reset } = useWriteContract()
+    const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash })
+
+    useEffect(() => {
+        if (isSuccess) {
+            queryClient.invalidateQueries({ queryKey: [CACHE_KEYS.MARKET_DETAILS] })
+            queryClient.invalidateQueries({ queryKey: [CACHE_KEYS.MARKETS] })
+        }
+    }, [isSuccess, queryClient])
+
+    const resolveWithChainlink = (marketAddress) => {
+        writeContract({
+            address: marketAddress,
+            abi: LvrMarketABI,
+            functionName: 'resolveWithChainlink',
+            args: [],
+            gas: 300000n,
+        })
+    }
+
+    return { resolveWithChainlink, isPending, isConfirming, isSuccess, hash, reset }
+}
+
+// Hook for the VRF-selected resolver to finalize a disputed market.
+export function useFinalizeDisputedOutcome() {
+    const queryClient = useQueryClient()
+    const { writeContract, data: hash, isPending, reset } = useWriteContract()
+    const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash })
+
+    useEffect(() => {
+        if (isSuccess) {
+            queryClient.invalidateQueries({ queryKey: [CACHE_KEYS.MARKET_DETAILS] })
+            queryClient.invalidateQueries({ queryKey: [CACHE_KEYS.MARKETS] })
+        }
+    }, [isSuccess, queryClient])
+
+    const finalizeDisputedOutcome = (marketAddress, outcome) => {
+        writeContract({
+            address: marketAddress,
+            abi: LvrMarketABI,
+            functionName: 'finalizeDisputedOutcome',
+            args: [BigInt(outcome)],
+            gas: 300000n,
+        })
+    }
+
+    return { finalizeDisputedOutcome, isPending, isConfirming, isSuccess, hash, reset }
 }
 
 // Hook to check allowance for any token (YES/NO tokens specificially)
@@ -698,5 +794,23 @@ export function usePortfolio() {
         },
         enabled: !!userAddress && !!markets && markets.length > 0,
         staleTime: 10 * 1000,
+    })
+}
+
+const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3001"
+
+// Hook for the Graph-subgraph + Chainlink-price-feed agent (backend/src/agent/insights.ts)
+// — flags Chainlink-resolved markets where the AMM's price has drifted from what the
+// oracle already implies the outcome would be.
+export function useMarketInsights() {
+    return useQuery({
+        queryKey: ['market-insights'],
+        queryFn: async () => {
+            const res = await fetch(`${API_URL}/api/agent/insights`)
+            if (!res.ok) throw new Error(`HTTP ${res.status}`)
+            return res.json()
+        },
+        staleTime: 30 * 1000,
+        retry: 1,
     })
 }

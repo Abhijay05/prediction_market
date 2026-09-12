@@ -1,7 +1,7 @@
 import { useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, Loader2, AlertCircle, Gavel, Coins, Clock } from "lucide-react";
 import { useState, useEffect } from "react";
-import { useMarketDetails, useTrade, useApproveMUSD, useAllowance, useUserBalances, useMUSDBalance, useAdminResolve, useRedeem, useTokenAllowance, useApproveToken } from "../hooks/useContracts";
+import { useMarketDetails, useTrade, useApproveMUSD, useAllowance, useUserBalances, useMUSDBalance, useAdminResolve, useRedeem, useTokenAllowance, useApproveToken, useResolveWithChainlink, useFinalizeDisputedOutcome } from "../hooks/useContracts";
 import { useAccount } from "wagmi";
 import { maxUint256, parseEther } from "viem";
 import { PriceChart } from "../components/PriceChart";
@@ -344,6 +344,8 @@ export default function Market() {
 
   const { resolve, isPending: isResolving } = useAdminResolve();
   const { redeem, isPending: isRedeeming } = useRedeem();
+  const { resolveWithChainlink, isPending: isResolvingOracle } = useResolveWithChainlink();
+  const { finalizeDisputedOutcome, isPending: isFinalizingDispute } = useFinalizeDisputedOutcome();
 
   const yesPercentage = market ? (market.priceYes * 100) : 50;
   const noPercentage = 100 - yesPercentage;
@@ -367,6 +369,9 @@ export default function Market() {
   }, [market]);
 
   const isResolved = market && market.state === 'RESOLVED';
+  const isDisputed = market && market.state === 'DISPUTED';
+  const isSelectedResolver = market && market.disputeResolverSelected && address
+    && market.disputeResolverSelected.toLowerCase() === address.toLowerCase();
 
   if (isLoading) {
     return (
@@ -416,6 +421,21 @@ export default function Market() {
                 <div className="pill-btn border-indigo-500/30 text-indigo-400">
                   <CountdownTimer deadline={market.deadline} />
                 </div>
+                <div
+                  className={`pill-btn ${market.hasChainlinkFeed ? "border-sky-500/30 text-sky-400" : "border-slate-500/30 text-slate-400"}`}
+                  title={market.hasChainlinkFeed
+                    ? "This market resolves automatically from a Chainlink Price Feed — no admin involved."
+                    : "This market resolves via the optimistic propose/dispute flow, or an admin fallback."}
+                >
+                  {market.hasChainlinkFeed ? "Chainlink Price Feed" : "Manual / Admin"}
+                </div>
+                {isDisputed && (
+                  <div className="pill-btn border-amber-500/30 text-amber-400">
+                    {market.disputeResolverSelected
+                      ? "Resolver selected via Chainlink VRF"
+                      : "Disputed — awaiting Chainlink VRF resolver"}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -478,6 +498,40 @@ export default function Market() {
                   isPending={isResolving}
                   state={market.state}
                 />
+
+                {market.hasChainlinkFeed && isExpired && market.state === 'OPEN' && (
+                  <button
+                    onClick={() => resolveWithChainlink(marketAddress)}
+                    disabled={isResolvingOracle}
+                    className="w-full mt-4 pill-btn border-sky-500/30 text-sky-400 justify-center py-3"
+                  >
+                    {isResolvingOracle ? "Resolving..." : "Resolve via Chainlink Price Feed"}
+                  </button>
+                )}
+
+                {isDisputed && isSelectedResolver && (
+                  <div className="mt-4 space-y-2">
+                    <p className="text-xs text-amber-400">
+                      Chainlink VRF selected you as the resolver for this disputed market.
+                    </p>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => finalizeDisputedOutcome(marketAddress, 1)}
+                        disabled={isFinalizingDispute}
+                        className="flex-1 pill-btn border-emerald-500/30 text-emerald-400 justify-center py-3"
+                      >
+                        Finalize YES
+                      </button>
+                      <button
+                        onClick={() => finalizeDisputedOutcome(marketAddress, 0)}
+                        disabled={isFinalizingDispute}
+                        className="flex-1 pill-btn border-rose-500/30 text-rose-400 justify-center py-3"
+                      >
+                        Finalize NO
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </>

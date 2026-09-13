@@ -1,8 +1,14 @@
 import { useState, useEffect } from "react";
-import { AlertCircle, Loader2, CheckCircle } from "lucide-react";
+import { AlertCircle, Loader2, CheckCircle, Zap } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useCreateMarket, useApproveMUSD, useAllowance, useMUSDBalance } from "../hooks/useContracts";
 import { useAccount } from "wagmi";
+
+// Sepolia ETH/USD — the only feed this build has been tested against. Kept as a fixed
+// choice rather than a free-text address field: a misconfigured feed address would
+// silently make a market un-resolvable, and this is the one path we've verified works.
+const SEPOLIA_ETH_USD_FEED = "0x694AA1769357215DE4FAC081bf1f309aDC325306";
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 export default function CreateMarket() {
   const navigate = useNavigate();
@@ -15,6 +21,9 @@ export default function CreateMarket() {
     durationHours: "",
     durationMinutes: "",
     liquidity: "",
+    useChainlinkResolution: false,
+    strikePrice: "",
+    resolveYesIfAbove: true,
   });
 
   const { isConnected } = useAccount();
@@ -24,8 +33,8 @@ export default function CreateMarket() {
   const { data: musdBalance } = useMUSDBalance();
 
   const handleInputChange = (e) => {
-    const { name, value } = e.target;
-    setFormData((prev) => ({ ...prev, [name]: value }));
+    const { name, value, type, checked } = e.target;
+    setFormData((prev) => ({ ...prev, [name]: type === "checkbox" ? checked : value }));
   };
 
   useEffect(() => {
@@ -45,17 +54,21 @@ export default function CreateMarket() {
   };
 
   const handleDeploy = () => {
+    const useChainlink = formData.useChainlinkResolution && formData.strikePrice;
     createMarket({
       title: formData.question,
       description: formData.criteria, // Using criteria as description
-      resolutionSource: formData.sourceUrl,
+      resolutionSource: useChainlink ? "Chainlink ETH/USD Price Feed" : formData.sourceUrl,
       isDynamic: false, // Default to static for simpler UI
       duration: {
         days: formData.durationDays || 0,
         hours: formData.durationHours || 0,
         minutes: formData.durationMinutes || 0
       },
-      collateral: formData.liquidity
+      collateral: formData.liquidity,
+      priceFeed: useChainlink ? SEPOLIA_ETH_USD_FEED : ZERO_ADDRESS,
+      strikePrice: useChainlink ? BigInt(Math.round(parseFloat(formData.strikePrice) * 1e8)) : 0n,
+      resolveYesIfAbove: useChainlink ? formData.resolveYesIfAbove : false,
     });
   };
 
@@ -152,18 +165,79 @@ export default function CreateMarket() {
                 />
               </div>
 
-              <div>
-                <label className="block text-white font-medium mb-2">
-                  Resolution Source
+              {!formData.useChainlinkResolution && (
+                <div>
+                  <label className="block text-white font-medium mb-2">
+                    Resolution Source
+                  </label>
+                  <input
+                    type="text"
+                    name="sourceUrl"
+                    placeholder="e.g., CoinGecko, Reuters, etc."
+                    value={formData.sourceUrl}
+                    onChange={handleInputChange}
+                    className="min-input"
+                  />
+                </div>
+              )}
+
+              <div className="rounded-lg p-4 bg-sky-500/5 border border-sky-500/20">
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    name="useChainlinkResolution"
+                    checked={formData.useChainlinkResolution}
+                    onChange={handleInputChange}
+                    className="mt-1"
+                  />
+                  <div>
+                    <p className="text-white font-medium flex items-center gap-2">
+                      <Zap size={16} className="text-sky-400" />
+                      Auto-resolve with Chainlink Price Feed
+                    </p>
+                    <p className="text-slate-400 text-sm mt-1">
+                      Instead of proposing/disputing an outcome, this market resolves
+                      itself automatically off the real ETH/USD price once it expires —
+                      no admin or proposer needed. Use this only for questions phrased
+                      as an ETH price target.
+                    </p>
+                  </div>
                 </label>
-                <input
-                  type="text"
-                  name="sourceUrl"
-                  placeholder="e.g., CoinGecko, Reuters, etc."
-                  value={formData.sourceUrl}
-                  onChange={handleInputChange}
-                  className="min-input"
-                />
+
+                {formData.useChainlinkResolution && (
+                  <div className="mt-4 grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-white text-sm font-medium mb-2">
+                        Strike Price (USD)
+                      </label>
+                      <input
+                        type="number"
+                        name="strikePrice"
+                        placeholder="e.g., 3000"
+                        value={formData.strikePrice}
+                        onChange={handleInputChange}
+                        className="min-input"
+                        min="0"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-white text-sm font-medium mb-2">
+                        Resolves YES if price is
+                      </label>
+                      <select
+                        name="resolveYesIfAbove"
+                        value={formData.resolveYesIfAbove ? "above" : "below"}
+                        onChange={(e) =>
+                          setFormData((prev) => ({ ...prev, resolveYesIfAbove: e.target.value === "above" }))
+                        }
+                        className="min-input"
+                      >
+                        <option value="above">Above strike</option>
+                        <option value="below">Below strike</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-4">
@@ -253,6 +327,14 @@ export default function CreateMarket() {
                     ${formData.liquidity || "0"} mUSD
                   </p>
                 </div>
+                <div className="border-t border-white/6 pt-4 flex justify-between items-start">
+                  <p className="text-slate-400">Resolution</p>
+                  <p className="text-white font-medium text-right">
+                    {formData.useChainlinkResolution
+                      ? `Chainlink — YES if ETH ${formData.resolveYesIfAbove ? "above" : "below"} $${formData.strikePrice || "0"}`
+                      : "Manual (propose / dispute)"}
+                  </p>
+                </div>
               </div>
 
               {!hasAllowance ? (
@@ -336,7 +418,8 @@ export default function CreateMarket() {
                   step === 3 ||
                   !formData.question ||
                   !isConnected ||
-                  (step === 2 && !hasAllowance)
+                  (step === 2 && !hasAllowance) ||
+                  (formData.useChainlinkResolution && !formData.strikePrice)
                 }
                 className="px-6 py-3 bg-primary text-black font-medium rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
               >

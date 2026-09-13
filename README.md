@@ -10,12 +10,33 @@
 [![Redis](https://img.shields.io/badge/Redis-v7-red?logo=redis)](https://redis.io)
 [![Prometheus](https://img.shields.io/badge/Prometheus-v2-E6522C?logo=prometheus)](https://prometheus.io)
 [![Grafana](https://img.shields.io/badge/Grafana-v10-F46800?logo=grafana)](https://grafana.com)
+[![Chainlink](https://img.shields.io/badge/Chainlink-Price%20Feeds%20%2B%20VRF-375BD2?logo=chainlink)](https://chain.link)
+[![The Graph](https://img.shields.io/badge/The%20Graph-Subgraph-6747ED?logo=thegraph)](https://thegraph.com)
+[![1inch](https://img.shields.io/badge/1inch-Aqua-1B314F?logo=1inch)](https://1inch.io)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-**[🚀 Quick Start](#-installation--setup) • [📖 Features](#-key-features) • [🧠 System Architecture](#-system-architecture) • [🧪 Testing](#-testing) • [📈 Telemetry](#-observability--telemetry)**
+**[🚀 Quick Start](#-installation--setup) • [📖 Features](#-key-features) • [🏆 ETHOnline 2026](#-ethonline-2026--continuity-submission) • [🧠 System Architecture](#-system-architecture) • [🧪 Testing](#-testing) • [📈 Telemetry](#-observability--telemetry)**
 
 Built with ❤️ by **Team CipherText**
 </div>
+
+---
+
+## 🏆 ETHOnline 2026 — Continuity Submission
+
+This project is pre-existing work (built May–June 2026); the sections below describe
+that original build. **Three sponsor integrations were added during ETHOnline 2026**:
+
+- **Chainlink** — Price Feeds auto-resolve objective markets with no admin involved;
+  VRF replaces what used to be a dead end when a market's outcome was disputed.
+- **The Graph** — a subgraph indexes the platform's markets/trades, and a risk-monitor
+  agent cross-references it against the Chainlink feed to flag AMM/oracle divergence
+  near a market's deadline.
+- **1inch Aqua** — idle post-resolution collateral can earn swap fees via a
+  non-custodial Aqua strategy, deliberately kept isolated from the live redemption path.
+
+Full pre-existing/new breakdown: **[`CONTINUITY.md`](./CONTINUITY.md)**. Diagram of the
+whole system, old and new: **[`ARCHITECTURE.md`](./ARCHITECTURE.md)**.
 
 ---
 
@@ -48,11 +69,15 @@ LvrAMM addresses these inefficiencies by pairing a high-performance **Solidity S
 
 The project is structured as a robust hub-and-spoke model. The smart contracts guarantee trustless execution and solvency, while the indexing and transport layers ensure the UI mirrors on-chain movements instantly without polling APIs.
 
+> This diagram covers the original, pre-existing system. See
+> **[`ARCHITECTURE.md`](./ARCHITECTURE.md)** for the full picture including the
+> Chainlink/Graph/Aqua integrations added during ETHOnline 2026.
+
 ```mermaid
 graph TD
   subgraph "Blockchain (Sepolia Testnet)"
-    Router[PredictionMarketRouter.sol]
-    PM[PredictionMarket.sol]
+    Router[Router.sol]
+    PM[LvrMarket.sol]
     Trader[User Wallet]
   end
 
@@ -108,10 +133,10 @@ graph TD
 ## ✨ Key Features
 
 ### 💎 Smart Contracts (Foundry Stack)
-- **Centralized Router Gateway**: The `PredictionMarketRouter.sol` standardizes market deployment parameters, prevents arbitrary outcome exploits, and acts as the secure entry point for trade executions.
+- **Centralized Router Gateway**: `Router.sol` standardizes market deployment parameters, prevents arbitrary outcome exploits, and acts as the secure entry point for trade executions.
 - **Outcome Share Tokenization**: Fully compliant ERC20 YES/NO outcome tokens are minted dynamically upon adding liquidity or executing trades.
 - **Precision Mathematics**: Implements 18-decimal precision accounting for shares, reserves, and pool collateral (using standard ERC20 collateral mock tokens like `mUSD`), eliminating mathematical dust leakage.
-- **Trustless Finalization**: Admin-secured resolution endpoints allow winners to redeem winning shares for the core collateral at a strict 1:1 ratio.
+- **Three resolution paths**: the original optimistic propose/dispute flow with an admin fallback, plus two added during ETHOnline 2026 — permissionless Chainlink Price Feed resolution for objective markets, and Chainlink VRF picking a fair, unpredictable resolver when a market is disputed instead of it always falling back to admin. See `CONTINUITY.md` for the full breakdown.
 
 ### ⚡ Real-Time Indexing & WebSockets
 - **Bulletproof Event Pipeline**: Listens to on-chain market swaps in real time via an Alchemy WebSockets listener, queuing jobs asynchronously with **BullMQ** to prevent backend bottlenecks during high transaction volumes.
@@ -167,7 +192,28 @@ PORT=3001
 DATABASE_URL="postgresql://username:password@host/database?sslmode=require"
 REDIS_URL="redis://localhost:6379"
 ALCHEMY_API_KEY="your_alchemy_api_key_here"
-ROUTER_ADDRESS="0x9cac07fd1a2196caf7c79932cf473bf0fb72ba9b"
+ROUTER_ADDRESS="0x4293d76eF16B6f947050663298B818d51A0B6DD7"
+
+# The Graph — query URL from your own Subgraph Studio deploy (see subgraph/)
+SUBGRAPH_QUERY_URL="https://api.studio.thegraph.com/query/<id>/<name>/<version>"
+
+# Optional — natural-language layer on /api/agent/insights, works fine without it
+GEMINI_API_KEY=""
+```
+
+Create a `.env` file in the **`contract`** directory (only needed for deploying/testing
+the contracts yourself, not for running the app against the existing Sepolia deployment):
+```bash
+# contract/.env
+PRIVATE_KEY="0xyour_deployer_private_key"
+
+# Chainlink VRF — create + fund a subscription at vrf.chain.link (Sepolia)
+VRF_SUBSCRIPTION_ID=""
+VRF_KEY_HASH=""
+RESOLVER_POOL="0xaddr1,0xaddr2,0xaddr3"
+
+# 1inch Aqua fork test only — a mainnet RPC URL, no funds ever move
+MAINNET_RPC_URL="https://eth-mainnet.g.alchemy.com/v2/your_key"
 ```
 
 ---
@@ -241,6 +287,8 @@ forge test -vvvv
 ### 🧠 Key Tests Included:
 - `RouterTest.sol`: Validates Router ownership, permissionless deployments, fee allocations, and admin-authorized resolution states.
 - `PredictionMarket.fuzz.t.sol`: Uses Foundry Fuzzing to test YES/NO price boundaries, swap calculations under highly dynamic trade volumes, and liquidity solvency constraints.
+- `ChainlinkResolution.t.sol`, `DisputeResolverVRF.t.sol`: Chainlink Price Feed resolution and VRF-based dispute resolution, using Chainlink's official `MockV3Aggregator`/`VRFCoordinatorV2_5Mock`.
+- `CollateralYieldStrategy.t.sol`: 1inch Aqua strategy, run against a real mainnet fork (`FOUNDRY_PROFILE=fork forge test --match-path test/CollateralYieldStrategy.t.sol`) since Aqua has no testnet.
 
 ---
 
@@ -264,6 +312,9 @@ LvrAMM is fully instrumented for complete transparency and production-grade moni
 - [x] **Real-Time Websockets**: Sub-second price ticks pushed via Redis Pub/Sub.
 - [x] **IST & Gap-Filled Charting**: PremiumStep-Area chart scaled with custom timezones.
 - [x] **Dockerized Telemetry**: Prometheus metrics & pre-configured Grafana telemetry.
+- [x] **Chainlink Price Feed + VRF resolution** *(ETHOnline 2026)*: Objective markets auto-resolve off a real price feed; disputed markets get a VRF-picked resolver instead of always falling back to admin.
+- [x] **The Graph subgraph + risk-monitor agent** *(ETHOnline 2026)*: Markets indexed via a standard subgraph; an agent flags AMM/oracle divergence near a market's deadline.
+- [x] **1inch Aqua collateral strategy** *(ETHOnline 2026)*: Idle post-resolution collateral can earn yield non-custodially — built and fork-tested, deliberately not wired into the live redemption path.
 - [ ] **Dynamic LVR Fees**: Automated fee adjustments tracking Sepolia implied volatility.
 - [ ] **Cross-Chain Integration**: Deployments on Base and Arbitrum.
 

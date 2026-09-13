@@ -26,6 +26,14 @@ const LVR_MARKET_ABI = ["function getPriceYes() view returns (uint256)"];
 // away from the oracle-implied outcome.
 const DIVERGENCE_THRESHOLD = 0.15;
 
+// "What would happen if this market resolved right now" is only a fair proxy for
+// "what will actually happen at the deadline" when there's little time left for the
+// price to move back. Far from the deadline, a rational AMM price should differ from
+// a hard 0/1 oracle snapshot — that's not a mispricing, it's the market correctly
+// pricing in the chance the price moves before it actually matters. Only compare the
+// two once a market is this close to expiring.
+const NEAR_DEADLINE_SECONDS = 6 * 60 * 60; // 6 hours
+
 interface OracleMarket {
   id: string;
   title: string;
@@ -33,6 +41,7 @@ interface OracleMarket {
   strikePrice: string;
   resolveYesIfAbove: boolean;
   status: string;
+  deadline: string;
 }
 
 interface MarketInsight {
@@ -43,6 +52,7 @@ interface MarketInsight {
   strikePrice: string;
   wouldResolveYesNow: boolean;
   divergence: number;
+  secondsToDeadline: number;
   flagged: boolean;
   reasoning: string;
 }
@@ -57,6 +67,7 @@ async function queryOracleMarkets(): Promise<OracleMarket[]> {
         strikePrice
         resolveYesIfAbove
         status
+        deadline
       }
     }
   `;
@@ -92,14 +103,25 @@ async function getInsight(market: OracleMarket, provider: ethers.Provider): Prom
 
   const ammPriceYes = Number(ethers.formatEther(ammPriceRaw));
   const divergence = Math.abs(ammPriceYes - oracleImpliedProbability);
-  const flagged = divergence > DIVERGENCE_THRESHOLD;
+
+  const secondsToDeadline = Number(market.deadline) - Math.floor(Date.now() / 1000);
+  const isNearDeadline = secondsToDeadline <= NEAR_DEADLINE_SECONDS;
+  // Only ever flag near-deadline markets. Far from the deadline, a price that hasn't
+  // already snapped to 0/1 isn't a mispricing — it's the market correctly pricing in
+  // the chance the underlying price still moves before the real deadline arrives.
+  const flagged = isNearDeadline && divergence > DIVERGENCE_THRESHOLD;
 
   const reasoning = flagged
-    ? `The AMM prices YES at ${(ammPriceYes * 100).toFixed(1)}%, but the current Chainlink answer ` +
-      `(${answer.toString()}) already implies this market would resolve ${wouldResolveYesNow ? "YES" : "NO"} ` +
-      `if it settled right now — a ${(divergence * 100).toFixed(1)}pp gap worth a closer look before the deadline.`
-    : `The AMM's ${(ammPriceYes * 100).toFixed(1)}% YES price is broadly consistent with the current ` +
-      `Chainlink-implied outcome.`;
+    ? `With under ${Math.max(1, Math.round(secondsToDeadline / 3600))}h left, the AMM still prices YES at ` +
+      `${(ammPriceYes * 100).toFixed(1)}%, but the current Chainlink answer (${answer.toString()}) already ` +
+      `implies this market would resolve ${wouldResolveYesNow ? "YES" : "NO"} if it settled right now — a ` +
+      `${(divergence * 100).toFixed(1)}pp gap that's unlikely to close on its own this close to expiry.`
+    : isNearDeadline
+      ? `The AMM's ${(ammPriceYes * 100).toFixed(1)}% YES price is broadly consistent with the current ` +
+        `Chainlink-implied outcome this close to the deadline.`
+      : `Deadline is more than ${Math.round(NEAR_DEADLINE_SECONDS / 3600)}h away — a gap between the AMM's ` +
+        `${(ammPriceYes * 100).toFixed(1)}% and the current spot price isn't meaningful yet, since the ` +
+        `underlying price still has time to move either way before it actually matters.`;
 
   return {
     marketId: market.id,
@@ -109,6 +131,7 @@ async function getInsight(market: OracleMarket, provider: ethers.Provider): Prom
     strikePrice: market.strikePrice,
     wouldResolveYesNow,
     divergence,
+    secondsToDeadline,
     flagged,
     reasoning,
   };
@@ -125,12 +148,21 @@ async function generateNarrativeSummary(insights: MarketInsight[]): Promise<stri
   if (flagged.length === 0) return null;
 
   const prompt =
-    "You are a terse market-risk analyst for a prediction-market platform. Given these " +
-    "flagged markets, where the AMM's crowd price disagrees with what an independent " +
-    "Chainlink price feed already implies the outcome would be, write a 2-3 sentence " +
-    "briefing a trader could read in five seconds. Be specific with the numbers given, " +
-    "don't restate the methodology.\n\n" +
-    JSON.stringify(flagged.map((i) => ({ title: i.title, ammPriceYes: i.ammPriceYes, wouldResolveYesNow: i.wouldResolveYesNow, divergence: i.divergence })));
+    "You are a terse market-risk analyst for a prediction-market platform. Each market " +
+    "below is close to its deadline (that filtering has already been done for you — " +
+    "don't second-guess it), and its AMM crowd price disagrees with what an independent " +
+    "Chainlink price feed already implies the outcome would be if it settled right now. " +
+    "Write a 2-3 sentence briefing a trader could read in five seconds, specific with " +
+    "the numbers given. Don't restate the methodology or mention that filtering happened.\n\n" +
+    JSON.stringify(
+      flagged.map((i) => ({
+        title: i.title,
+        ammPriceYes: i.ammPriceYes,
+        wouldResolveYesNow: i.wouldResolveYesNow,
+        divergence: i.divergence,
+        hoursToDeadline: Math.round(i.secondsToDeadline / 3600),
+      }))
+    );
 
   try {
     const res = await fetch(
